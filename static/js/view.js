@@ -2,6 +2,7 @@ import {
   copy,
   formatDecimal,
   formatDuration,
+  formatSize,
   groupThousands,
   setLabel,
   store,
@@ -9,9 +10,15 @@ import {
 } from './ui.js';
 
 const view = document.getElementById('view');
-const { kind, raw, name } = view.dataset;
+const { kind, raw, name, ext } = view.dataset;
 const bytes = Number(view.dataset.bytes);
 const extra = document.getElementById('extra-meta');
+
+/** Shows the `[data-show]` part of a button that matches `state` and hides the others. */
+function showPart(button, state) {
+  for (const part of button.querySelectorAll('[data-show]'))
+    part.hidden = part.dataset.show !== state;
+}
 
 function addMeta(text) {
   if (!text) return;
@@ -44,7 +51,8 @@ function initImage() {
         stage.tabIndex = 0;
         stage.setAttribute('role', 'button');
         const actual = stage.classList.contains('actual');
-        stage.setAttribute('aria-label', actual ? 'Fit to window' : 'Show at full size');
+        // A fixed name; aria-pressed says which way it is.
+        stage.setAttribute('aria-label', 'Full size');
         stage.setAttribute('aria-pressed', String(actual));
         hint.textContent = actual
           ? 'Click the picture to fit it to the window.'
@@ -53,6 +61,7 @@ function initImage() {
         stage.removeAttribute('tabindex');
         stage.removeAttribute('role');
         stage.removeAttribute('aria-label');
+        stage.removeAttribute('aria-pressed');
       }
     };
     const toggle = () => {
@@ -71,15 +80,21 @@ function initImage() {
     sync();
   };
 
-  if (img.complete && img.naturalWidth) ready();
-  else img.addEventListener('load', ready, { once: true });
-  img.addEventListener('error', () => {
+  const failed = () => {
     hint.hidden = true;
     toast('Couldn’t show this picture.', {
       type: 'error',
       detail: 'Your browser may not support its format. Download it instead.',
     });
-  });
+  };
+  // This module runs after the picture may already have loaded or failed, so check both.
+  if (img.complete) {
+    if (img.naturalWidth) ready();
+    else failed();
+  } else {
+    img.addEventListener('load', ready, { once: true });
+    img.addEventListener('error', failed, { once: true });
+  }
 }
 
 // ---------- video / audio ----------
@@ -111,8 +126,7 @@ function initPlayer() {
   const play = btn('play');
   const syncPlay = () => {
     const paused = media.paused;
-    for (const part of play.querySelectorAll('[data-show]'))
-      part.hidden = part.dataset.show !== (paused ? 'paused' : 'playing');
+    showPart(play, paused ? 'paused' : 'playing');
     setLabel(play, paused ? 'Play' : 'Pause');
   };
   const toggle = () => (media.paused ? media.play().catch(() => {}) : media.pause());
@@ -168,38 +182,65 @@ function initPlayer() {
     fill(seek);
   });
   seek.addEventListener('change', () => (scrubbing = false));
+  // The slider's own arrow step is 1 % of the file (36 s on an hour); use the player's steps.
+  const SEEK_KEYS = {
+    ArrowLeft: -5,
+    ArrowDown: -5,
+    ArrowRight: 5,
+    ArrowUp: 5,
+    PageDown: -30,
+    PageUp: 30,
+  };
+  seek.addEventListener('keydown', e => {
+    const jump = SEEK_KEYS[e.key];
+    if (jump === undefined) return;
+    e.preventDefault();
+    e.stopPropagation();
+    media.currentTime = Math.min(Math.max(0, media.currentTime + jump), media.duration || 0);
+  });
 
   // volume
   const mute = btn('mute');
   const syncVolume = () => {
     const silent = media.muted || media.volume === 0;
-    for (const part of mute.querySelectorAll('[data-show]'))
-      part.hidden = part.dataset.show !== (silent ? 'muted' : 'sound');
+    showPart(mute, silent ? 'muted' : 'sound');
     setLabel(mute, silent ? 'Unmute' : 'Mute');
-    volume.value = String(media.muted ? 0 : media.volume);
+    const shown = media.muted ? 0 : media.volume;
+    volume.value = String(shown);
+    volume.setAttribute('aria-valuetext', `${Math.round(shown * 100)} %`);
     fill(volume);
   };
+  // Restore what was playing last time: the level and whether it was muted.
   const savedVolume = Number(store.get('cyexUploaderVolume'));
-  if (store.get('cyexUploaderVolume') != null && savedVolume >= 0 && savedVolume <= 1)
+  if (store.get('cyexUploaderVolume') != null && savedVolume > 0 && savedVolume <= 1)
     media.volume = savedVolume;
+  media.muted = store.get('cyexUploaderMuted') === '1';
   volume.addEventListener('input', () => {
     media.volume = Number(volume.value);
     media.muted = media.volume === 0;
-    store.set('cyexUploaderVolume', String(media.volume));
   });
-  mute.addEventListener('click', () => {
+  const toggleMute = () => {
     if (media.muted && media.volume === 0) media.volume = 1;
     media.muted = !media.muted;
+  };
+  mute.addEventListener('click', toggleMute);
+  media.addEventListener('volumechange', () => {
+    syncVolume();
+    // Level 0 is kept as "muted", so a reload never comes back silent with no reason shown.
+    if (media.volume > 0) store.set('cyexUploaderVolume', String(media.volume));
+    store.set('cyexUploaderMuted', media.muted || media.volume === 0 ? '1' : null);
   });
-  media.addEventListener('volumechange', syncVolume);
   syncVolume();
 
   // speed and pitch
+  const MIN_SPEED = SPEEDS[0];
+  const MAX_SPEED = SPEEDS[SPEEDS.length - 1];
   const setSpeed = rate => {
     media.playbackRate = rate;
     speedOut.textContent = `${formatDecimal(rate)}×`;
-    btn('slower').disabled = rate <= SPEEDS[0];
-    btn('faster').disabled = rate >= SPEEDS[SPEEDS.length - 1];
+    // aria-disabled, not disabled: a disabled button would drop keyboard focus at the limit.
+    btn('slower').setAttribute('aria-disabled', String(rate <= MIN_SPEED));
+    btn('faster').setAttribute('aria-disabled', String(rate >= MAX_SPEED));
   };
   const step = dir => {
     const rate = media.playbackRate;
@@ -209,8 +250,13 @@ function initPlayer() {
         : [...SPEEDS].reverse().find(s => s < rate - 1e-6);
     if (next) setSpeed(next);
   };
-  btn('slower').addEventListener('click', () => step(-1));
-  btn('faster').addEventListener('click', () => step(1));
+  for (const [act, dir] of [
+    ['slower', -1],
+    ['faster', 1],
+  ]) {
+    const b = btn(act);
+    b.addEventListener('click', () => b.getAttribute('aria-disabled') !== 'true' && step(dir));
+  }
   pitch.addEventListener('change', () => {
     media.preservesPitch = pitch.checked;
     media.mozPreservesPitch = pitch.checked;
@@ -225,18 +271,17 @@ function initPlayer() {
 
   // full screen (video only)
   const fsBtn = btn('fullscreen');
-  function fullscreen() {
+  const fullscreen = () => {
     if (!fsBtn) return;
     if (document.fullscreenElement) document.exitFullscreen();
     else player.requestFullscreen?.().catch(() => {});
-  }
+  };
   if (fsBtn) {
     if (!document.fullscreenEnabled) fsBtn.hidden = true;
     fsBtn.addEventListener('click', fullscreen);
     document.addEventListener('fullscreenchange', () => {
       const on = document.fullscreenElement === player;
-      for (const part of fsBtn.querySelectorAll('[data-show]'))
-        part.hidden = part.dataset.show !== (on ? 'fullscreen' : 'windowed');
+      showPart(fsBtn, on ? 'fullscreen' : 'windowed');
       setLabel(fsBtn, on ? 'Exit full screen' : 'Full screen');
     });
   }
@@ -284,7 +329,7 @@ function initPlayer() {
         break;
       case 'm':
       case 'M':
-        mute.click();
+        toggleMute();
         break;
       case 'f':
       case 'F':
@@ -299,13 +344,14 @@ function initPlayer() {
   // Links can carry a start time and speed: #t=1:23&speed=1.5 (upstream's #speed= still works).
   const fromHash = () => {
     const params = new URLSearchParams(location.hash.slice(1));
-    const t = params.get('t');
-    if (t) {
-      const secs = t.split(':').reduce((acc, part) => acc * 60 + Number(part), 0);
-      if (Number.isFinite(secs)) media.currentTime = secs;
+    const t = params.get('t')?.split(':');
+    if (t && t.length <= 3) {
+      const secs = t.reduce((acc, part) => acc * 60 + Number(part), 0);
+      if (Number.isFinite(secs) && secs >= 0) media.currentTime = secs;
     }
-    const speed = Number(params.get('speed'));
-    if (speed > 0) setSpeed(Math.min(Math.max(speed, SPEEDS[0]), SPEEDS[SPEEDS.length - 1]));
+    // "1,5" as the player shows it, or "1.5".
+    const speed = Number(params.get('speed')?.replace(',', '.'));
+    if (speed > 0) setSpeed(Math.min(Math.max(speed, MIN_SPEED), MAX_SPEED));
     if (params.get('preserve') === 'false') {
       pitch.checked = false;
       pitch.dispatchEvent(new Event('change'));
@@ -323,6 +369,7 @@ function initPlayer() {
 
 const TEXT_LIMIT = 2 * 1024 * 1024; // show at most this much in the page
 const HIGHLIGHT_LIMIT = 300 * 1024; // auto-detecting the language gets slow past this
+const MIN_GUESS_RELEVANCE = 10; // below this, highlight.js is guessing from a few tokens
 
 async function initText() {
   const code = document.getElementById('code');
@@ -347,7 +394,7 @@ async function initText() {
       // Drop a line cut in half by the range.
       const cut = text.lastIndexOf('\n');
       if (cut > 0) text = text.slice(0, cut);
-      notice.textContent = 'Showing the first 2 MB. Download the file for the rest.';
+      notice.textContent = `Showing the first ${formatSize(TEXT_LIMIT)}. Download the file for the rest.`;
       notice.hidden = false;
     }
   } catch {
@@ -362,7 +409,24 @@ async function initText() {
   out.textContent = text;
   gutter.textContent = Array.from({ length: Math.max(lines, 1) }, (_, i) => i + 1).join('\n');
   copyBtn.disabled = false;
-  copyBtn.addEventListener('click', () => copy(text, copyBtn));
+  copyBtn.addEventListener('click', async () => {
+    // A shortened view still copies the whole file.
+    if (bytes <= TEXT_LIMIT) return copy(text, copyBtn);
+    try {
+      const res = await fetch(raw);
+      if (!res.ok) throw new Error(String(res.status));
+      copy(await res.text(), copyBtn);
+    } catch {
+      toast('Couldn’t copy the whole file.', { type: 'error', detail: 'Download it instead.' });
+    }
+  });
+  // The box only needs to be a tab stop when it scrolls.
+  const syncScrollable = () => {
+    const scrolls = code.scrollHeight > code.clientHeight || code.scrollWidth > code.clientWidth;
+    if (scrolls) code.tabIndex = 0;
+    else code.removeAttribute('tabindex');
+  };
+  addEventListener('resize', syncScrollable);
 
   // wrap
   const setWrap = on => {
@@ -370,13 +434,17 @@ async function initText() {
     wrapBtn.setAttribute('aria-pressed', String(on));
     store.set('cyexUploaderWrap', on ? '1' : null);
   };
-  wrapBtn.addEventListener('click', () => setWrap(!code.classList.contains('is-wrapped')));
+  wrapBtn.addEventListener('click', () => {
+    setWrap(!code.classList.contains('is-wrapped'));
+    syncScrollable();
+  });
   setWrap(store.get('cyexUploaderWrap') === '1');
+  syncScrollable();
 
   // highlight
   if (text.length > HIGHLIGHT_LIMIT) {
     hlBtn.disabled = true;
-    hlBtn.dataset.hint = 'Off for files over 300 KB.';
+    hlBtn.dataset.hint = `Off for files over ${formatSize(HIGHLIGHT_LIMIT)}.`;
     return;
   }
   let highlighted = false;
@@ -393,16 +461,23 @@ async function initText() {
     if (highlighted) return;
     try {
       const { default: hljs } = await import('/static/lib/highlight.min.js');
-      // Pick a language from the extension when hljs knows it, otherwise let it guess.
-      const ext = ['txt', 'text', 'log'].includes(view.dataset.ext) ? '' : view.dataset.ext;
-      const result =
-        ext && hljs.getLanguage(ext)
-          ? hljs.highlight(text, { language: ext })
-          : hljs.highlightAuto(text);
+      // Use the extension when it names a language; otherwise guess, but only keep a confident
+      // guess, so a short note or a log doesn't come out as "CSS".
+      const named = hljs.getLanguage(ext);
+      let result = null;
+      if (named && named.name !== 'Plain text') result = hljs.highlight(text, { language: ext });
+      else {
+        const guess = hljs.highlightAuto(text);
+        if (guess.relevance >= MIN_GUESS_RELEVANCE) result = guess;
+      }
       if (hlBtn.getAttribute('aria-pressed') !== 'true') return; // turned off while loading
+      highlighted = true;
+      if (!result) {
+        info.textContent = `${lineLabel} · No language found`;
+        return;
+      }
       out.innerHTML = result.value; // hljs escapes the source
       out.className = 'hljs';
-      highlighted = true;
       const lang = result.language && hljs.getLanguage(result.language)?.name;
       info.textContent = lang ? `${lineLabel} · ${lang}` : lineLabel;
     } catch {

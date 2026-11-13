@@ -19,7 +19,6 @@
     <meta property="og:type" content="music.song" />
     <meta property="og:audio" content="{{ raw_url }}" />
     {%- endif %}
-    <link rel="preload" href="/static/icons.svg" as="image" type="image/svg+xml" />
     <script type="module" src="/static/js/view.js"></script>
 {%- endblock %}
 {% block main %}
@@ -45,7 +44,7 @@
   <div class="stage stage-image" id="stage">
     <img id="media" src="{{ raw }}" alt="{{ name }}" decoding="async" />
   </div>
-  <p class="hint view-foot" id="image-hint">Click the picture to see it at full size.</p>
+  <p class="hint view-foot" id="image-hint" hidden>Click the picture to see it at full size.</p>
 
   {%- else if kind == "video" || kind == "audio" %}
   <div class="player" id="player" data-type="{{ kind }}">
@@ -93,7 +92,7 @@
       <button type="button" class="icon-btn small" id="highlight-toggle" aria-pressed="false" aria-label="Highlight syntax" data-tip="Highlight syntax" data-hint="Guesses the language. Remembered for next time.">{% call m::i("code") %}{% endcall %}</button>
       <button type="button" class="btn secondary small" id="copy-text" disabled>{% call m::i("copy") %}{% endcall %}Copy text</button>
     </div>
-    <div class="code" id="code" tabindex="0" aria-label="Text">
+    <div class="code" id="code" role="region" aria-label="Text">
       <pre class="gutter" id="gutter" aria-hidden="true"></pre>
       <pre class="text"><code id="text"></code></pre>
     </div>

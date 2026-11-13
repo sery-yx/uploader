@@ -1546,3 +1546,7 @@ textarea.field {
   flex: 1;
   text-align: right;
 }
+.stepper button[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
