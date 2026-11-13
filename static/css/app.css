@@ -1246,9 +1246,16 @@ textarea.field {
   .drop {
     min-height: 180px;
   }
+  /* Picture on top, then the name, then Choose another and the × on one row. */
   .picked {
-    flex-direction: column;
-    align-items: stretch;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .picked-meta {
+    flex-basis: 100%;
+  }
+  .picked .btn {
+    flex: 1;
   }
   .picked .thumb {
     width: 100%;
