@@ -366,11 +366,11 @@ async function initText() {
 
   // wrap
   const setWrap = on => {
-    code.classList.toggle('wrap', on);
+    code.classList.toggle('is-wrapped', on);
     wrapBtn.setAttribute('aria-pressed', String(on));
     store.set('cyexUploaderWrap', on ? '1' : null);
   };
-  wrapBtn.addEventListener('click', () => setWrap(!code.classList.contains('wrap')));
+  wrapBtn.addEventListener('click', () => setWrap(!code.classList.contains('is-wrapped')));
   setWrap(store.get('cyexUploaderWrap') === '1');
 
   // highlight

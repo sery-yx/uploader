@@ -8,6 +8,7 @@ body {
   font-size: var(--text-web);
   line-height: 1.55;
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -709,6 +710,8 @@ textarea.field {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* Same height as the action row it replaces, so nothing below moves. */
+  min-height: 40px;
 }
 .bar {
   flex: 1;
@@ -802,6 +805,11 @@ textarea.field {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.row-meta .hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .row-meta a:hover {
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -841,7 +849,7 @@ textarea.field {
   font-size: var(--text-hint);
 }
 .meta .sep {
-  color: var(--border-strong);
+  color: var(--dim);
 }
 .view-actions {
   display: flex;
@@ -872,6 +880,7 @@ textarea.field {
 }
 .stage-image img {
   max-height: calc(100vh - 230px);
+  max-height: max(160px, 100dvh - 230px);
   width: auto;
   height: auto;
   object-fit: contain;
@@ -882,6 +891,7 @@ textarea.field {
   place-items: start;
   overflow: auto;
   max-height: calc(100vh - 200px);
+  max-height: max(200px, 100dvh - 200px);
 }
 .stage-image.actual img {
   max-width: none;
@@ -889,6 +899,9 @@ textarea.field {
   cursor: zoom-out;
 }
 .stage-image.pixel img {
+  /* Tiny pixel art and icons scale up crisp instead of sitting there as a dot. */
+  width: min(100%, 256px);
+  height: auto;
   image-rendering: pixelated;
 }
 
@@ -899,6 +912,8 @@ textarea.field {
 .player .stage video {
   width: 100%;
   max-height: calc(100vh - 290px);
+  /* A floor so a landscape phone still gets a usable picture. */
+  max-height: max(240px, 100dvh - 290px);
   background: var(--media-ground);
   cursor: pointer;
 }
@@ -1126,6 +1141,7 @@ textarea.field {
   display: flex;
   overflow: auto;
   max-height: calc(100vh - 250px);
+  max-height: max(240px, 100dvh - 250px);
   background: var(--bg);
 }
 .code pre {
@@ -1153,11 +1169,11 @@ textarea.field {
   min-width: 0;
   white-space: pre;
 }
-.code.wrap .text {
+.code.is-wrapped .text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.code.wrap .gutter {
+.code.is-wrapped .gutter {
   display: none;
 }
 .code code {
@@ -1218,10 +1234,10 @@ textarea.field {
     --page-pad: 16px;
   }
   .nav {
-    display: none;
+    gap: 12px;
   }
   .header-row {
-    justify-content: space-between;
+    gap: 12px;
     min-height: 56px;
   }
   .card {
@@ -1241,8 +1257,13 @@ textarea.field {
   .view-actions {
     width: 100%;
   }
+  .view-actions {
+    flex-wrap: nowrap;
+  }
   .view-actions .btn {
     flex: 1;
+    min-width: 0;
+    padding: 0 12px;
   }
   .controls .volume {
     display: none;
@@ -1253,8 +1274,72 @@ textarea.field {
   .upload-actions .btn.primary {
     flex: 1;
   }
+  /* The field takes its own line; its buttons share the next one. */
   .field-row {
-    flex-direction: column;
+    flex-wrap: wrap;
+  }
+  .field-row .field {
+    flex-basis: 100%;
+  }
+  .field-row .btn {
+    flex: 1;
+  }
+}
+
+/* Phones: notices at the bottom, errors at the top under the header, so they never overlap. */
+@media (max-width: 560px) {
+  .toasts {
+    left: 12px;
+    right: 12px;
+    align-items: stretch;
+  }
+  .toasts.notices {
+    right: 12px;
+    align-items: stretch;
+  }
+  .toasts.errors {
+    left: 12px;
+    top: 68px;
+    bottom: auto;
+    align-items: stretch;
+  }
+  .toast {
+    max-width: none;
+  }
+}
+
+/* Touch: every control at least 40 px, and text fields at 16 px so iOS doesn't zoom. */
+@media (pointer: coarse) {
+  .btn.small,
+  .segmented button {
+    min-height: 40px;
+  }
+  .icon-btn.small {
+    width: 40px;
+    height: 40px;
+  }
+  .stepper {
+    height: 40px;
+  }
+  .stepper button {
+    width: 40px;
+  }
+  .check {
+    min-height: 40px;
+  }
+  .btn.link.small {
+    min-height: 40px;
+  }
+  .nav a {
+    padding-block: 12px;
+  }
+  .site-footer a {
+    display: inline-block;
+    padding-block: 10px;
+  }
+  .field,
+  textarea.field {
+    font-size: 16px;
   }
 }
 
@@ -1276,9 +1361,50 @@ textarea.field {
 }
 
 @media (prefers-contrast: more) {
-  :root {
-    --border: var(--border-strong);
+  :root,
+  :root[data-theme='light'] {
+    /* Structure lines at 3:1 or more, secondary text one step brighter. */
+    --border: var(--dim);
+    --border-strong: var(--muted);
+    --dim: var(--muted);
   }
+}
+
+/* Windows contrast themes: state that was carried by colour alone gets an outline. */
+@media (forced-colors: active) {
+  .range::-webkit-slider-runnable-track {
+    background: CanvasText;
+  }
+  .range::-moz-range-track {
+    background: CanvasText;
+  }
+  /* Kept apart: a selector list with an unknown pseudo-element is dropped whole. */
+  .range::-webkit-slider-thumb {
+    background: Highlight;
+  }
+  .range::-moz-range-thumb {
+    background: Highlight;
+  }
+  .segmented button[aria-selected='true'],
+  .icon-btn[aria-pressed='true'] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  .btn:disabled,
+  .icon-btn:disabled {
+    color: GrayText;
+    border-color: GrayText;
+  }
+  .bar i {
+    background: Highlight;
+  }
+}
+
+/* Theme switch: colours swap at once inside the cross-fade instead of animating under it. */
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
 }
 
 /* highlight.js, mapped onto cyex semantic colours so both themes keep contrast */
