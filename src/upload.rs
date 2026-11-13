@@ -1,272 +1,289 @@
 use std::{
     fmt, io,
-    path::Path,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use actix_web::{
-    error::PayloadError,
-    http::header::ContentType,
-    web::{Header, Payload},
-    HttpRequest, HttpResponse,
-};
+use actix_web::{error::PayloadError, http::header::ContentType, web, HttpRequest, HttpResponse};
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tracing::warn;
 
-use crate::{config::CONFIG, deletion, rng};
+use crate::{
+    auth::Caller,
+    config::CONFIG,
+    deletion,
+    media::{self, Kind},
+    rng, tokens,
+};
 
-// <=> Used when uploading from the homepage.
+/// Sent by the home page with a raw `POST`, percent-encoded so any file name fits in a header.
 const FILENAME_POST_HEADER: &str = "X-Upload-Filename";
 
-#[derive(Debug, thiserror::Error, actix_web_error::Json)]
-pub enum MultipartError {
-    #[error("No field found")]
-    #[status(400)]
-    NoEntry,
-    #[error("{0}")]
-    #[status(400)]
-    Multer(multer::Error),
-    #[error("Upload error: {0}")]
-    #[status(500)]
-    Upload(UploadError<multer::Error>),
-}
+/// How much of the start of a file we look at to guess its type.
+const SNIFF_LEN: usize = 512;
 
 #[derive(Debug, thiserror::Error, actix_web_error::Json)]
-pub enum PostError {
-    #[error("Upload error: {0}")]
+pub enum UploadError {
+    #[error("The upload has no file in it")]
+    #[status(400)]
+    Empty,
+    #[error("Couldn't read the form: {0}")]
+    #[status(400)]
+    Multipart(multer::Error),
+    #[error("The file is larger than the {0} MiB limit")]
+    #[status(413)]
+    TooLarge(u64),
+    #[error("The upload was interrupted: {0}")]
+    #[status(400)]
+    Interrupted(String),
+    #[error("This key can only upload {0}")]
+    #[status(403)]
+    NotAllowed(String),
+    #[error("Couldn't save the file")]
     #[status(500)]
-    Upload(UploadError<PayloadError>),
-}
-
-#[derive(Debug, thiserror::Error, actix_web_error::Json)]
-#[status(500)]
-pub enum UploadError<E: fmt::Display + fmt::Debug> {
-    #[error("Io-Error")]
-    Io(io::Error),
-    #[error("{0}")]
-    Inner(E),
+    Io(#[from] io::Error),
 }
 
 #[derive(Serialize)]
 pub struct UploadResponse {
     link: String,
     deletion_link: String,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-enum TypeHint {
-    None,
-    Audio,
-    Text,
+    /// `image`, `video`, `audio`, `text` or `file`. Additive; existing clients ignore it.
+    kind: &'static str,
 }
 
 pub async fn upload_multipart(
-    body: Payload,
-    ct: Header<ContentType>,
-) -> Result<HttpResponse, MultipartError> {
-    let boundary = multer::parse_boundary(ct.as_ref()).map_err(MultipartError::Multer)?;
-    let mut mp = multer::Multipart::new(UnsafePayload(body), boundary);
-    match mp.next_field().await.map_err(MultipartError::Multer)? {
-        Some(mut field) => {
-            let filename = field.file_name().map(|f| f.to_owned());
-            let ct = field.content_type().cloned();
-            inner_upload(&mut field, ct.as_ref(), filename.as_ref().map(Path::new))
-                .await
-                .map_err(MultipartError::Upload)
+    caller: Caller,
+    body: web::Payload,
+    ct: web::Header<ContentType>,
+) -> Result<HttpResponse, UploadError> {
+    let boundary = multer::parse_boundary(ct.as_ref()).map_err(UploadError::Multipart)?;
+    let mut form = multer::Multipart::new(SendPayload(body), boundary);
+    // The first field is the file (ShareX and Chatterino both send exactly one).
+    let mut field = form
+        .next_field()
+        .await
+        .map_err(UploadError::Multipart)?
+        .ok_or(UploadError::Empty)?;
+    let filename = field.file_name().map(str::to_owned);
+    let result = store(&caller, &mut field, filename.as_deref()).await;
+    if matches!(result, Err(UploadError::NotAllowed(_))) {
+        // Read the rest of the form (the closing boundary, any extra fields) so the client
+        // gets the 403 instead of a reset connection.
+        drop(field);
+        while let Ok(Some(mut extra)) = form.next_field().await {
+            while let Ok(Some(_)) = extra.chunk().await {}
         }
-        None => Err(MultipartError::NoEntry),
     }
+    result
 }
 
 pub async fn upload_post(
-    mut body: Payload,
-    h: Option<Header<ContentType>>,
+    caller: Caller,
+    mut body: web::Payload,
     req: HttpRequest,
-) -> Result<HttpResponse, PostError> {
-    let mime = h.map(|h| h.0 .0);
+) -> Result<HttpResponse, UploadError> {
     let filename = req
         .headers()
         .get(FILENAME_POST_HEADER)
         .and_then(|h| h.to_str().ok())
-        .map(Path::new);
-    inner_upload(&mut body, mime.as_ref(), filename)
-        .await
-        .map_err(PostError::Upload)
+        .map(str::to_owned);
+    store(&caller, &mut body, filename.as_deref()).await
 }
 
-async fn inner_upload<S, E>(
+async fn store<S, E>(
+    caller: &Caller,
     stream: &mut S,
-    content_type: Option<&mime::Mime>,
-    upload_filename: Option<&Path>,
-) -> Result<HttpResponse, UploadError<E>>
+    upload_name: Option<&str>,
+) -> Result<HttpResponse, UploadError>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: fmt::Debug + fmt::Display,
+    E: fmt::Display,
 {
-    let mut filename = rng::generate_name();
-    filename.push('.');
-    let (extension, ty, initial_buf) = determine_extension(stream, content_type).await?;
-    // Check if the user provided a filename, and try to use its extension.
-    // However, we still check the expected extension, because we want to determine the filetype,
-    // so we can return an enhanced page.
-    if let Some(f) = upload_filename
-        .and_then(|p| p.extension())
-        .and_then(|s| s.to_str())
-    {
-        // overwritten extension
-        filename.push_str(f);
-    } else {
-        // determined extension
-        filename.push_str(extension);
+    let limit = CONFIG.max_upload_bytes();
+    let head = read_head(stream).await?;
+    if head.is_empty() {
+        return Err(UploadError::Empty);
     }
+    check_size(head.len() as u64, limit)?;
 
-    let file_path = CONFIG.file_dir.join(&filename);
-    let res = async move /* try */ {
-        let mut file = tokio::fs::File::create(file_path)
-            .await
-            .map_err(UploadError::Io)?;
-
-        if let Some(buf) = initial_buf {
-            file.write_all(&buf).await.map_err(UploadError::Io)?;
+    // A name the uploader gave wins (".jpeg" stays ".jpeg"); otherwise look at the bytes.
+    let sniffed = sniff_extension(&head);
+    let extension = upload_name
+        .and_then(media::extension_of)
+        .unwrap_or_else(|| sniffed.to_owned());
+    if let Caller::Scoped { perms, .. } = caller {
+        if !tokens::upload_allowed(perms, &extension, sniffed) {
+            drain(stream, limit.saturating_sub(head.len() as u64)).await;
+            return Err(UploadError::NotAllowed(tokens::describe(perms)));
         }
+    }
+    // The file is written under a dot-name (never served: `is_valid_stored_name` refuses it) and
+    // renamed into place only once it's complete. The guard removes it on every other exit,
+    // including the handler being dropped when the client disconnects or cancels.
+    let (filename, mut file, partial) = create_partial(&extension).await?;
 
-        while let Some(item) = stream.next().await {
-            let item = item.map_err(UploadError::Inner)?;
-            file.write_all(&item).await.map_err(UploadError::Io)?;
+    let written = async {
+        file.write_all(&head).await?;
+        let mut total = head.len() as u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| UploadError::Interrupted(e.to_string()))?;
+            total += chunk.len() as u64;
+            check_size(total, limit)?;
+            file.write_all(&chunk).await?;
         }
-
-        Ok(())
+        file.flush().await?;
+        drop(file);
+        let target = CONFIG.file_dir.join(&filename);
+        if tokio::fs::try_exists(&target).await? {
+            // A name collision since we picked it; vanishingly rare, never overwrite.
+            return Err(UploadError::Io(io::Error::from(
+                io::ErrorKind::AlreadyExists,
+            )));
+        }
+        tokio::fs::rename(&partial.path, &target).await?;
+        Ok::<_, UploadError>(())
     }
     .await;
 
-    match res {
-        Ok(_) => Ok(HttpResponse::Ok().json(UploadResponse {
-            link: match ty {
-                TypeHint::None => format!("{}/{filename}", CONFIG.domain),
-                TypeHint::Audio => format!("{}/a/{filename}", CONFIG.domain),
-                TypeHint::Text => format!("{}/t/{filename}", CONFIG.domain),
-            },
-            deletion_link: format!(
-                "{}/d/{filename}/{}",
-                CONFIG.domain,
-                deletion::make_key(&filename)
-            ),
-        })),
+    match written {
+        Ok(()) => partial.disarm(),
         Err(e) => {
-            warn!(error = ?e, "Couldn't upload");
-            Err(e)
+            warn!(error = %e, file = %filename, "Upload failed, removing the partial file");
+            return Err(e);
         }
     }
+
+    let domain = CONFIG.domain();
+    Ok(HttpResponse::Ok().json(UploadResponse {
+        link: format!("{domain}/{filename}"),
+        deletion_link: format!("{domain}/d/{filename}/{}", deletion::make_key(&filename)),
+        kind: Kind::from_extension(&extension).as_str(),
+    }))
 }
 
-async fn determine_extension<S, E>(
-    stream: &mut S,
-    content_type: Option<&mime::Mime>,
-) -> Result<(&'static str, TypeHint, Option<Bytes>), UploadError<E>>
+/// Reads and discards the rest of a refused upload (up to `budget` bytes), so the client is
+/// done sending and actually sees the error instead of a reset connection.
+async fn drain<S, E>(stream: &mut S, budget: u64)
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: fmt::Debug + fmt::Display,
 {
-    if let Some((e, ty)) = content_type.and_then(extension_from_mime) {
-        return Ok((e, ty, None));
+    let mut seen = 0u64;
+    while let Some(Ok(chunk)) = stream.next().await {
+        seen += chunk.len() as u64;
+        if seen > budget {
+            break;
+        }
     }
-    let mut bytes = None; // this doesn't allocate
-    let maybe = loop {
-        match stream.next().await {
-            Some(Ok(item)) => {
-                match bytes {
-                    None => {
-                        // this should be more common
-                        match infer::get(&item) {
-                            Some(ty) => {
-                                return Ok((ty.extension(), type_hint_from_infer(&ty), Some(item)));
-                            }
-                            None => {
-                                bytes = Some(BytesMut::from(item.as_ref()));
-                            }
-                        }
-                    }
-                    Some(ref mut buf) => {
-                        buf.extend_from_slice(&item);
-                        match infer::get(buf) {
-                            Some(ty) => break Some((ty.extension(), type_hint_from_infer(&ty))),
-                            None if buf.len() > 256 => {
-                                break None;
-                            }
-                            _ => (),
-                        }
-                    }
+}
+
+/// Picks a free name and creates its partial file, retrying on the rare collision.
+async fn create_partial(
+    extension: &str,
+) -> Result<(String, tokio::fs::File, PartialFile), UploadError> {
+    for _ in 0..8 {
+        let filename = format!("{}.{extension}", rng::generate_name());
+        if tokio::fs::try_exists(CONFIG.file_dir.join(&filename)).await? {
+            continue;
+        }
+        let path = CONFIG.file_dir.join(format!(".{filename}.part"));
+        match tokio::fs::File::create_new(&path).await {
+            Ok(file) => return Ok((filename, file, PartialFile { path, armed: true })),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(UploadError::Io(io::Error::from(
+        io::ErrorKind::AlreadyExists,
+    )))
+}
+
+/// Removes an unfinished upload when dropped, unless disarmed after the final rename.
+struct PartialFile {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl PartialFile {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialFile {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(e) = std::fs::remove_file(&self.path) {
+                if e.kind() != io::ErrorKind::NotFound {
+                    warn!(error = %e, path = %self.path.display(), "Couldn't remove a partial upload");
                 }
-            }
-            Some(Err(e)) => {
-                // discard everything
-                return Err(UploadError::Inner(e));
-            }
-            None => {
-                // until now we couldn't determine the type
-                break None;
             }
         }
-    };
-
-    match maybe {
-        Some((ty, hint)) => Ok((ty, hint, bytes.map(BytesMut::freeze))),
-        None => match bytes {
-            Some(bytes) => {
-                if std::str::from_utf8(&bytes).is_ok() {
-                    Ok(("txt", TypeHint::Text, Some(bytes.freeze())))
-                } else {
-                    Ok(("bin", TypeHint::None, Some(bytes.freeze())))
-                }
-            }
-            None => Err(UploadError::Io(io::Error::from(
-                io::ErrorKind::UnexpectedEof,
-            ))),
-        },
     }
 }
 
-fn extension_from_mime(mime: &mime::Mime) -> Option<(&'static str, TypeHint)> {
-    (mime.type_().as_str() == "*" || mime.subtype().as_str() == "*")
-        .then_some(mime)
-        .and_then(|mime| mime_guess::get_extensions(mime.type_().as_str(), mime.subtype().as_str()))
-        .filter(
-            |ext| !ext.is_empty() && ext.len() > 10, // basic heuristic for too many extensions
-        )
-        .and_then(|ext| ext.last().copied())
-        .map(|e| (e, type_hint_from_mime(mime.type_().as_str())))
-}
-
-fn type_hint_from_mime(ty: &str) -> TypeHint {
-    if ty == mime::AUDIO.as_str() {
-        TypeHint::Audio
-    } else if ty == mime::TEXT.as_str() {
-        TypeHint::Text
+fn check_size(total: u64, limit: u64) -> Result<(), UploadError> {
+    if total > limit {
+        Err(UploadError::TooLarge(CONFIG.max_upload_mib))
     } else {
-        TypeHint::None
+        Ok(())
     }
 }
 
-fn type_hint_from_infer(inf: &infer::Type) -> TypeHint {
-    if inf.mime_type().starts_with(mime::AUDIO.as_str()) {
-        TypeHint::Audio
-    } else if inf.mime_type().starts_with(mime::TEXT.as_str()) {
-        TypeHint::Text
+/// Reads at least [`SNIFF_LEN`] bytes (or the whole stream, if it's shorter).
+async fn read_head<S, E>(stream: &mut S) -> Result<Bytes, UploadError>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: fmt::Display,
+{
+    let mut buf = BytesMut::new();
+    while buf.len() < SNIFF_LEN {
+        match stream.next().await {
+            Some(Ok(chunk)) if buf.is_empty() && chunk.len() >= SNIFF_LEN => return Ok(chunk),
+            Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
+            Some(Err(e)) => return Err(UploadError::Interrupted(e.to_string())),
+            None => break,
+        }
+    }
+    Ok(buf.freeze())
+}
+
+fn sniff_extension(head: &[u8]) -> &'static str {
+    if let Some(ty) = infer::get(head) {
+        // infer knows "html" and "xml"; never store something a browser would run.
+        return match ty.extension() {
+            "html" | "htm" | "xhtml" => "txt",
+            ext => ext,
+        };
+    }
+    if looks_like_text(head) {
+        "txt"
     } else {
-        TypeHint::None
+        "bin"
     }
 }
 
-struct UnsafePayload(Payload);
+/// Valid UTF-8, allowing the sample to end in the middle of a character.
+fn looks_like_text(head: &[u8]) -> bool {
+    match std::str::from_utf8(head) {
+        Ok(s) => !s.contains('\0'),
+        Err(e) => e.error_len().is_none() && !head[..e.valid_up_to()].contains(&0),
+    }
+}
 
-unsafe impl Send for UnsafePayload {}
+/// `multer` wants a `Send` stream; actix's `Payload` isn't, but every handler future runs on the
+/// single-threaded worker that created it, so the payload is never moved across threads.
+struct SendPayload(web::Payload);
 
-impl Stream for UnsafePayload {
-    type Item = <Payload as Stream>::Item;
+// SAFETY: see the type's docs. actix-web workers are `!Send` runtimes; the stream never leaves
+// the worker thread it was created on.
+unsafe impl Send for SendPayload {}
+
+impl Stream for SendPayload {
+    type Item = Result<Bytes, PayloadError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.0).poll_next(cx)
@@ -274,5 +291,53 @@ impl Stream for UnsafePayload {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.0.size_hint()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sniffs_common_media() {
+        assert_eq!(sniff_extension(b"GIF89a\x01\x00\x01\x00"), "gif");
+        assert_eq!(sniff_extension(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"), "png");
+        assert_eq!(
+            sniff_extension(b"\0\0\0\x20ftypisom\0\0\x02\0isomiso2avc1mp41"),
+            "mp4"
+        );
+        // infer only recognises WebM in a sample longer than 256 bytes; uploads read 512.
+        let mut webm = b"\x1aE\xdf\xa3\x9fB\x86\x81\x01B\x82\x84webm".to_vec();
+        webm.resize(SNIFF_LEN, 0);
+        assert_eq!(sniff_extension(&webm), "webm");
+    }
+
+    #[test]
+    fn sniffs_text_and_binary() {
+        assert_eq!(sniff_extension("hello wörld".as_bytes()), "txt");
+        // cut in the middle of "ö"
+        assert_eq!(sniff_extension(&"hello wö".as_bytes()[..8]), "txt");
+        assert_eq!(sniff_extension(b"\xff\xfe\x00\x01junk"), "bin");
+        assert_eq!(
+            sniff_extension(b"<!DOCTYPE html><html><body>x</body></html>"),
+            "txt"
+        );
+    }
+
+    #[tokio::test]
+    async fn head_reads_across_small_chunks() {
+        let chunks: Vec<Result<Bytes, io::Error>> = (0..100)
+            .map(|_| Ok(Bytes::from_static(b"0123456789")))
+            .collect();
+        let mut stream = futures::stream::iter(chunks);
+        let head = read_head(&mut stream).await.unwrap();
+        assert!(head.len() >= SNIFF_LEN);
+        let rest: usize = stream
+            .map(|c| c.unwrap().len())
+            .collect::<Vec<_>>()
+            .await
+            .iter()
+            .sum();
+        assert_eq!(head.len() + rest, 1000);
     }
 }

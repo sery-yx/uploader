@@ -1,7 +1,6 @@
 use std::io;
 
-use actix_files::NamedFile;
-use actix_web::{delete, get, web, HttpResponse, Responder};
+use actix_web::{delete, get, web, HttpResponse};
 use base64::{
     engine::{
         general_purpose::{GeneralPurpose, GeneralPurposeConfig},
@@ -12,9 +11,12 @@ use base64::{
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha224;
 
-use crate::config::CONFIG;
+use crate::{config::CONFIG, media, templates};
 
 type HmacSha224 = Hmac<Sha224>;
+
+/// A SHA-224 MAC is 28 bytes, which is 38 characters of unpadded base64.
+const KEY_LEN: usize = 38;
 
 const DELETION_KEY_ENGINE: GeneralPurpose = GeneralPurpose::new(
     &base64::alphabet::URL_SAFE,
@@ -23,60 +25,95 @@ const DELETION_KEY_ENGINE: GeneralPurpose = GeneralPurpose::new(
         .with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
-pub fn make_key(link: &str) -> String {
-    let mut mac = HmacSha224::new(&CONFIG.secret);
-    mac.update(link.as_bytes());
-    let bytes = mac.finalize().into_bytes();
-    let mut buf = String::with_capacity(38);
-    DELETION_KEY_ENGINE.encode_string(bytes, &mut buf);
+type Secret = hmac::digest::Key<HmacSha224>;
+
+fn mac_for(secret: &Secret, filename: &str) -> [u8; 28] {
+    let mut mac = HmacSha224::new(secret);
+    mac.update(filename.as_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+pub fn make_key(filename: &str) -> String {
+    make_key_with(&CONFIG.secret, filename)
+}
+
+fn check_key(filename: &str, key: &str) -> bool {
+    check_key_with(&CONFIG.secret, filename, key)
+}
+
+fn make_key_with(secret: &Secret, filename: &str) -> String {
+    let mut buf = String::with_capacity(KEY_LEN);
+    DELETION_KEY_ENGINE.encode_string(mac_for(secret, filename), &mut buf);
     buf
+}
+
+fn check_key_with(secret: &Secret, filename: &str, key: &str) -> bool {
+    if key.len() != KEY_LEN {
+        return false;
+    }
+    let mut decoded = [0u8; 32];
+    match DELETION_KEY_ENGINE.decode_slice(key, &mut decoded) {
+        Ok(28) => constant_time_eq::constant_time_eq(&mac_for(secret, filename), &decoded[..28]),
+        _ => false,
+    }
 }
 
 #[derive(Debug, thiserror::Error, actix_web_error::Json)]
 pub enum DeletionError {
-    #[error("Your key is invalid")]
+    #[error("This deletion link isn't valid")]
     #[status(401)]
     InvalidKey,
-    #[error("This file doesn't exist")]
+    #[error("This file doesn't exist, it may already be deleted")]
     #[status(404)]
     NotFound,
-    #[error("Internal error: {0}")]
+    #[error("Couldn't delete the file")]
     #[status(500)]
-    IoError(io::Error),
+    Io(io::Error),
 }
 
 #[delete("/d/{filename}/{key}")]
-pub async fn service(path: web::Path<(String, String)>) -> Result<HttpResponse, DeletionError> {
+pub async fn delete_file(path: web::Path<(String, String)>) -> Result<HttpResponse, DeletionError> {
     let (filename, key) = path.into_inner();
-    if !check_key(&filename, &key) || filename.starts_with('.') {
+    if !media::is_valid_stored_name(&filename) || !check_key(&filename, &key) {
         return Err(DeletionError::InvalidKey);
     }
-    match tokio::fs::remove_file(&CONFIG.file_dir.join(filename)).await {
-        Ok(_) => Ok(HttpResponse::NoContent().finish()),
+    match tokio::fs::remove_file(CONFIG.file_dir.join(&filename)).await {
+        Ok(()) => Ok(HttpResponse::NoContent().finish()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Err(DeletionError::NotFound),
-        Err(e) => Err(DeletionError::IoError(e)),
+        Err(e) => {
+            tracing::warn!(error = %e, file = %filename, "Couldn't delete");
+            Err(DeletionError::Io(e))
+        }
     }
 }
 
 #[get("/d/{filename}/{key}")]
-pub async fn view() -> impl Responder {
-    NamedFile::open("./static/pages/delete/delete.html")
+pub async fn delete_page(path: web::Path<(String, String)>) -> HttpResponse {
+    let (filename, key) = path.into_inner();
+    let valid = media::is_valid_stored_name(&filename) && check_key(&filename, &key);
+    let exists = valid
+        && tokio::fs::metadata(CONFIG.file_dir.join(&filename))
+            .await
+            .is_ok_and(|m| m.is_file());
+    templates::delete_page(&filename, valid, exists)
 }
 
-fn check_key(link: &str, key: &str) -> bool {
-    if key.len() != 38 {
-        return false;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_round_trip() {
+        let mut secret = Secret::default();
+        secret[..28].copy_from_slice(&[7u8; 28]);
+        let other = Secret::default();
+
+        let key = make_key_with(&secret, "abc.png");
+        assert_eq!(key.len(), KEY_LEN);
+        assert!(check_key_with(&secret, "abc.png", &key));
+        assert!(!check_key_with(&other, "abc.png", &key));
+        assert!(!check_key_with(&secret, "abd.png", &key));
+        assert!(!check_key_with(&secret, "abc.png", &key[1..]));
+        assert!(!check_key_with(&secret, "abc.png", &"A".repeat(KEY_LEN)));
     }
-
-    let mut dec = [0; 32];
-    let dec_len = match DELETION_KEY_ENGINE.decode_slice(key, &mut dec) {
-        Ok(l) => l,
-        Err(_) => return false,
-    };
-
-    let mut mac = HmacSha224::new(&CONFIG.secret);
-    mac.update(link.as_bytes());
-    let bytes = mac.finalize().into_bytes();
-
-    bytes[..] == dec[..dec_len]
 }

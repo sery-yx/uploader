@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{%- import "macros.html" as m -%}
+{% block title %}Not found - cyex uploader{% endblock %}
+{% block head %}
+    <meta name="robots" content="noindex" />
+    <meta property="og:title" content="File not found" />
+    <meta property="og:description" content="It may have been deleted, or the link is wrong." />
+{%- endblock %}
+{% block main %}
+<section class="task" aria-labelledby="nf-title">
+  <div class="state">{% call m::i("file") %}{% endcall %}<h1 id="nf-title">Nothing here</h1></div>
+  <p class="sub">The file may have been deleted, or the link is wrong.</p>
+  <div class="task-actions"><a class="btn secondary" href="/">Go to upload</a></div>
+</section>
+{% endblock %}

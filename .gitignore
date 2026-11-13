@@ -5,3 +5,6 @@
 uploads
 config.toml
 node_modules
+.claude/
+keys.json
+keys.json.tmp

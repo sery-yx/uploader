@@ -1,76 +1,89 @@
-use std::future::{ready, Ready};
+//! Who is calling: the admin (the `authorization` value from config.toml) or a scoped key.
 
-use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
+use std::{
+    collections::BTreeSet,
+    future::{ready, Ready},
+};
+
+use actix_web::{dev::Payload, FromRequest, HttpRequest};
 use constant_time_eq::constant_time_eq;
-use futures::future::Either;
 
-pub struct AuthRequirement {
-    key: &'static str,
-}
+use crate::{
+    config::CONFIG,
+    tokens::{Perm, KEYS},
+};
 
 #[derive(Debug, thiserror::Error, actix_web_error::Json)]
 pub enum AuthError {
-    #[error("No 'Authorization' header specified")]
-    #[status(400)]
+    #[error("Send your upload key in the Authorization header")]
+    #[status(401)]
     NoHeader,
-    #[error("Invalid authorization")]
+    #[error("That upload key isn't valid")]
     #[status(401)]
     BadAuth,
+    #[error("Only the admin key can manage keys")]
+    #[status(403)]
+    NotAdmin,
 }
 
-impl AuthRequirement {
-    pub fn new(key: &'static str) -> Self {
-        Self { key }
-    }
+pub enum Caller {
+    Admin,
+    Scoped { name: String, perms: BTreeSet<Perm> },
 }
 
-impl<S, B> Transform<S, ServiceRequest> for AuthRequirement
-where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
-    S::Future: 'static,
-    B: 'static,
-{
-    type Response = ServiceResponse<B>;
-    type Error = actix_web::Error;
-    type Transform = AuthMiddleware<S>;
-    type InitError = ();
-    type Future = Ready<Result<Self::Transform, Self::InitError>>;
-
-    fn new_transform(&self, service: S) -> Self::Future {
-        ready(Ok(Self::Transform {
-            service,
-            key: self.key,
-        }))
-    }
-}
-
-pub struct AuthMiddleware<S> {
-    service: S,
-    key: &'static str,
-}
-
-impl<S, B> Service<ServiceRequest> for AuthMiddleware<S>
-where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = actix_web::Error>,
-    S::Future: 'static,
-    B: 'static,
-{
-    type Response = ServiceResponse<B>;
-    type Error = actix_web::Error;
-    type Future = Either<Ready<Result<Self::Response, Self::Error>>, S::Future>;
-
-    actix_web::dev::forward_ready!(service);
-
-    fn call(&self, req: ServiceRequest) -> Self::Future {
-        let header = req.headers().get("authorization");
-        let header = match header {
-            Some(h) => h,
-            None => return Either::Left(ready(Err(AuthError::NoHeader.into()))),
-        };
-        if constant_time_eq(header.as_bytes(), self.key.as_bytes()) {
-            Either::Right(self.service.call(req))
-        } else {
-            Either::Left(ready(Err(AuthError::BadAuth.into())))
+impl Caller {
+    fn from_header(value: &[u8]) -> Result<Self, AuthError> {
+        if constant_time_eq(value, CONFIG.authorization.as_bytes()) {
+            return Ok(Caller::Admin);
         }
+        let value = std::str::from_utf8(value).map_err(|_| AuthError::BadAuth)?;
+        // Scoped keys work with or without a "Bearer " prefix.
+        let secret = value.strip_prefix("Bearer ").unwrap_or(value).trim();
+        if !secret.starts_with("upl_") {
+            return Err(AuthError::BadAuth);
+        }
+        let keys = KEYS.read().unwrap_or_else(|e| e.into_inner());
+        keys.resolve(secret)
+            .map(|(name, perms)| Caller::Scoped { name, perms })
+            .ok_or(AuthError::BadAuth)
+    }
+
+    pub fn is_admin(&self) -> bool {
+        matches!(self, Caller::Admin)
+    }
+
+    pub fn perms(&self) -> BTreeSet<Perm> {
+        match self {
+            Caller::Admin => Perm::ALL.into_iter().collect(),
+            Caller::Scoped { perms, .. } => perms.clone(),
+        }
+    }
+}
+
+impl FromRequest for Caller {
+    type Error = AuthError;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        ready(match req.headers().get("authorization") {
+            Some(h) => Caller::from_header(h.as_bytes()),
+            None => Err(AuthError::NoHeader),
+        })
+    }
+}
+
+/// Only the admin gets past this extractor.
+pub struct Admin;
+
+impl FromRequest for Admin {
+    type Error = AuthError;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+        ready(match Caller::from_request(req, payload).into_inner() {
+            Ok(Caller::Admin) => Ok(Admin),
+            Ok(Caller::Scoped { .. }) => Err(AuthError::NotAdmin),
+            Err(e) => Err(e),
+        })
     }
 }

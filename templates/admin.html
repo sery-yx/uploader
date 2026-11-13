@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{%- import "macros.html" as m -%}
+{% block title %}Keys - cyex uploader{% endblock %}
+{% block head %}
+    <meta name="robots" content="noindex" />
+    <script type="module" src="/static/js/admin.js"></script>
+{%- endblock %}
+{% block nav_keys %}aria-current="page"{% endblock %}
+{% block main %}
+<div class="narrow keys-page">
+  <div class="page-head">
+    <h1>Keys</h1>
+    <p class="sub">Give someone a key that can only upload some kinds of files. Keys work on the upload page, in ShareX and in Chatterino.</p>
+  </div>
+
+  <div class="card empty" id="not-admin" hidden>
+    {% call m::i("key") %}{% endcall %}
+    <p id="not-admin-text">Sign in with the admin key on the upload page to manage keys.</p>
+    <a class="btn secondary" href="/">Go to upload</a>
+  </div>
+
+  <div id="admin" hidden>
+    <form class="card key-form" id="create-form" autocomplete="off">
+      <div>
+        <label class="label field-label" for="new-name">Name</label>
+        <input class="field" id="new-name" maxlength="60" required placeholder="Who or what it’s for, e.g. Nora’s phone" />
+      </div>
+      <fieldset class="perms">
+        <legend class="label field-label">Can upload</legend>
+        <div class="checks" data-perms></div>
+        <p class="hint">Pictures don’t include GIFs; tick both to allow both.</p>
+      </fieldset>
+      <div class="upload-actions">
+        <button type="submit" class="btn primary">{% call m::i("plus") %}{% endcall %}Create key</button>
+      </div>
+    </form>
+
+    <section class="card result" id="secret" hidden tabindex="-1" aria-labelledby="secret-title">
+      <div class="result-head" id="secret-title">{% call m::i("key") %}{% endcall %}<span id="secret-heading">Key created</span></div>
+      <p class="sub">Copy it now. It won’t be shown again; if it’s lost, reset the key.</p>
+      <div class="field-row">
+        <input class="field" id="secret-value" readonly aria-label="New key" />
+        <button type="button" class="btn secondary" id="secret-copy">{% call m::i("copy") %}{% endcall %}Copy key</button>
+      </div>
+      <div class="secret-tools">
+        <button type="button" class="btn ghost small" id="sharex">{% call m::i("download") %}{% endcall %}Download ShareX config</button>
+        <button type="button" class="btn ghost small" id="secret-done">Done</button>
+      </div>
+    </section>
+
+    <section class="recent" aria-labelledby="keys-title">
+      <div class="section-head">
+        <h2 class="label" id="keys-title">Keys</h2>
+        <span class="hint mono" id="keys-count"></span>
+      </div>
+      <ul class="rows" id="keys-list" hidden></ul>
+      <p class="empty inline" id="keys-empty" hidden>{% call m::i("key") %}{% endcall %}<span>No keys yet. The admin key from config.toml can always upload everything.</span></p>
+      <p class="empty inline" id="keys-loading"><span class="spinner"></span><span>Loading…</span></p>
+    </section>
+  </div>
+</div>
+{% endblock %}

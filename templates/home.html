@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{%- import "macros.html" as m -%}
+{% block title %}cyex uploader · Share pictures, GIFs, video and files{% endblock %}
+{% block head %}
+    <meta name="description" content="A private uploader for pictures, GIFs, video, audio and text." />
+    <script type="module" src="/static/js/home.js"></script>
+{%- endblock %}
+{% block nav_upload %}aria-current="page"{% endblock %}
+{% block main %}
+<div class="narrow" id="home" data-max-bytes="{{ max_upload_bytes }}" data-max-label="{{ max_upload }}">
+  <div class="page-head">
+    <h1>Upload</h1>
+    <p class="sub">Pictures, GIFs, video, audio, text or any other file, up to {{ max_upload }}.</p>
+  </div>
+
+  <noscript>
+    <div class="card empty inline">{% call m::i("circle-alert") %}{% endcall %}<span>Uploading from this page needs JavaScript. Links you were sent work without it.</span></div>
+  </noscript>
+
+  <!-- Shown until an upload key is saved in this browser. -->
+  <form class="card" id="key-form" hidden autocomplete="off">
+    <label class="label field-label" for="key-input">Upload key</label>
+    <div class="field-row">
+      <input class="field mono" id="key-input" type="password" spellcheck="false" required placeholder="Bearer …" aria-describedby="key-hint" />
+      <button class="btn primary" type="submit">Save key</button>
+    </div>
+    <p class="hint" id="key-hint">The admin key from the server’s config.toml, or a key the admin gave you. It stays in this browser.</p>
+  </form>
+
+  <div id="uploader" hidden>
+    <div class="upload-bar">
+      <div class="segmented" role="tablist" aria-label="What to upload">
+        <button type="button" role="tab" id="tab-file" aria-selected="true" aria-controls="panel-file">File</button>
+        <button type="button" role="tab" id="tab-text" aria-selected="false" aria-controls="panel-text" tabindex="-1">Text</button>
+      </div>
+      <span class="hint key-scope" id="key-scope" hidden></span>
+      <button type="button" class="btn ghost small" id="forget-key">{% call m::i("key") %}{% endcall %}Forget key</button>
+    </div>
+
+    <form class="card upload-card" id="upload-form">
+      <div id="panel-file" role="tabpanel" aria-labelledby="tab-file">
+        <input class="sr-only" id="file-input" type="file" tabindex="-1" aria-hidden="true" />
+        <div class="drop" id="drop" role="button" tabindex="0" aria-describedby="drop-hint">
+          <div class="drop-empty" id="drop-empty">
+            {% call m::i("upload") %}{% endcall %}
+            <strong>Choose a file</strong>
+            <span class="hint" id="drop-hint">or drop one here<span class="desktop-only">, or paste with <span class="kbd">Ctrl</span> <span class="kbd">V</span></span></span>
+          </div>
+          <div class="picked" id="picked" hidden>
+            <div class="thumb" id="picked-thumb"></div>
+            <div class="picked-meta">
+              <span class="picked-name" id="picked-name"></span>
+              <span class="hint" id="picked-info"></span>
+            </div>
+            <button type="button" class="icon-btn" id="clear-file" aria-label="Remove file" data-tip="Remove file">{% call m::i("x") %}{% endcall %}</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="panel-text" role="tabpanel" aria-labelledby="tab-text" hidden>
+        <label class="sr-only" for="text-input">Text to upload</label>
+        <textarea class="field" id="text-input" spellcheck="false" placeholder="Paste or type text…"></textarea>
+        <div class="text-foot">
+          <span class="hint mono" id="text-count">0 characters</span>
+          <span class="hint">Saved as a .txt file</span>
+        </div>
+      </div>
+
+      <div class="progress" id="progress" hidden>
+        <div class="bar" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progress-bar"><i></i></div>
+        <span class="mono" id="progress-text">0 %</span>
+        <button type="button" class="btn small secondary" id="cancel">Cancel</button>
+      </div>
+
+      <div class="upload-actions" id="actions">
+        <span class="hint" id="upload-hint"></span>
+        <button type="submit" class="btn primary" id="submit" disabled>{% call m::i("upload") %}{% endcall %}Upload</button>
+      </div>
+    </form>
+
+    <section class="card result" id="result" hidden aria-labelledby="result-title" tabindex="-1">
+      <div class="result-head" id="result-title">{% call m::i("circle-check") %}{% endcall %}<span>Uploaded</span></div>
+      <div>
+        <label class="label field-label" for="result-link">Link</label>
+        <div class="field-row">
+          <input class="field" id="result-link" readonly />
+          <button type="button" class="btn secondary" data-copy="result-link">{% call m::i("copy") %}{% endcall %}Copy link</button>
+          <a class="icon-btn" id="result-open" href="#" target="_blank" rel="noopener" aria-label="Open in a new tab" data-tip="Open in a new tab">{% call m::i("external") %}{% endcall %}</a>
+        </div>
+      </div>
+      <div>
+        <label class="label field-label" for="result-delete">Deletion link</label>
+        <div class="field-row">
+          <input class="field" id="result-delete" readonly aria-describedby="result-delete-hint" />
+          <button type="button" class="btn secondary" data-copy="result-delete">{% call m::i("copy") %}{% endcall %}Copy</button>
+        </div>
+        <p class="hint" id="result-delete-hint">Anyone with this link can delete the file. It’s also kept in your recent uploads below.</p>
+      </div>
+      <div><button type="button" class="btn ghost small" id="again">Upload another</button></div>
+    </section>
+
+    <section class="recent" aria-labelledby="recent-title">
+      <div class="section-head">
+        <h2 class="label" id="recent-title">Recent uploads</h2>
+        <button type="button" class="btn link small" id="clear-recent" hidden>Clear list</button>
+      </div>
+      <ul class="rows" id="recent-list" hidden></ul>
+      <p class="empty inline" id="recent-empty">{% call m::i("file") %}{% endcall %}<span>Files you upload from this browser show up here.</span></p>
+    </section>
+  </div>
+</div>
+{% endblock %}

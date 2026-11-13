@@ -1,0 +1,32 @@
+import { errorMessage, store, toast } from './ui.js';
+
+const button = document.getElementById('confirm-delete');
+
+button?.addEventListener('click', async () => {
+  button.disabled = true;
+  const label = button.lastChild;
+  label.textContent = 'Deleting…';
+  try {
+    const res = await fetch(location.pathname, { method: 'DELETE' });
+    if (!res.ok && res.status !== 404) {
+      throw new Error(errorMessage(res.status, await res.text()));
+    }
+    // Forget it in the uploader's recent list too.
+    const deletion = location.origin + location.pathname;
+    try {
+      const list = JSON.parse(store.get('cyexUploaderRecent') ?? '[]');
+      if (Array.isArray(list)) {
+        store.set('cyexUploaderRecent', JSON.stringify(list.filter(r => r?.deletion !== deletion)));
+      }
+    } catch {
+      /* nothing remembered */
+    }
+    for (const node of document.querySelectorAll('[data-step]'))
+      node.hidden = node.dataset.step !== 'done';
+    document.getElementById('deleted').focus();
+  } catch (e) {
+    button.disabled = false;
+    label.textContent = 'Delete file';
+    toast('Couldn’t delete the file.', { type: 'error', detail: e.message });
+  }
+});

@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{%- import "macros.html" as m -%}
+{% block title %}{{ name }} - cyex uploader{% endblock %}
+{% block head %}
+    <meta property="og:title" content="{{ name }}" />
+    <meta property="og:site_name" content="cyex uploader" />
+    <meta property="og:url" content="{{ page_url }}" />
+    <meta property="og:description" content="{{ kind_label }} · {{ size }}" />
+    {%- if kind == "image" %}
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="{{ raw_url }}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="{{ raw_url }}" />
+    {%- else if kind == "video" %}
+    <meta property="og:type" content="video.other" />
+    <meta property="og:video" content="{{ raw_url }}" />
+    <meta property="og:video:type" content="{{ mime }}" />
+    {%- else if kind == "audio" %}
+    <meta property="og:type" content="music.song" />
+    <meta property="og:audio" content="{{ raw_url }}" />
+    {%- endif %}
+    <link rel="preload" href="/static/icons.svg" as="image" type="image/svg+xml" />
+    <script type="module" src="/static/js/view.js"></script>
+{%- endblock %}
+{% block main %}
+<article class="view" id="view" data-kind="{{ kind }}" data-raw="{{ raw }}" data-name="{{ name }}" data-ext="{{ ext }}" data-bytes="{{ bytes }}">
+  <header class="view-head">
+    <div class="view-title">
+      <h1>{{ name }}</h1>
+      <p class="meta">
+        <span class="chip">{{ kind_label }}</span>
+        <span class="mono">{{ size }}</span>
+        {%- if !date.is_empty() %}<span class="sep" aria-hidden="true">·</span><time class="mono">{{ date }}</time>{% endif %}
+        <span id="extra-meta" class="mono"></span>
+      </p>
+    </div>
+    <div class="view-actions">
+      <button type="button" class="btn secondary" id="copy-link">{% call m::i("link") %}{% endcall %}Copy link</button>
+      <a class="btn secondary" href="{{ raw }}" download="{{ name }}">{% call m::i("download") %}{% endcall %}Download</a>
+      <a class="icon-btn" href="{{ raw }}" target="_blank" rel="noopener" aria-label="Open original" data-tip="Open original" data-hint="The file by itself, in a new tab.">{% call m::i("external") %}{% endcall %}</a>
+    </div>
+  </header>
+
+  {%- if kind == "image" %}
+  <div class="stage stage-image" id="stage">
+    <img id="media" src="{{ raw }}" alt="{{ name }}" decoding="async" />
+  </div>
+  <p class="hint view-foot" id="image-hint">Click the picture to see it at full size.</p>
+
+  {%- else if kind == "video" || kind == "audio" %}
+  <div class="player" id="player" data-type="{{ kind }}">
+    <div class="stage {{ kind }}" id="stage">
+      {%- if kind == "video" %}
+      <video id="media" src="{{ raw }}" preload="metadata" playsinline controls></video>
+      {%- else %}
+      {% call m::i("music") %}{% endcall %}
+      <audio id="media" src="{{ raw }}" preload="metadata" controls></audio>
+      {%- endif %}
+      <div class="overlay" id="buffering" hidden><span class="spinner"></span></div>
+    </div>
+    <div class="controls" id="controls" role="group" aria-label="Player controls" hidden>
+      <button type="button" class="icon-btn" data-act="play" aria-label="Play" data-tip="Play" data-hint="Space or K. Arrow keys skip 5 s.">
+        <span data-show="paused">{% call m::i("play") %}{% endcall %}</span><span data-show="playing" hidden>{% call m::i("pause") %}{% endcall %}</span>
+      </button>
+      <span class="time mono"><span id="t-current">0:00</span> / <span id="t-duration">0:00</span></span>
+      <input type="range" class="range seek" id="seek" min="0" max="0" step="any" value="0" aria-label="Seek" />
+      <div class="group">
+        <button type="button" class="icon-btn small" data-act="mute" aria-label="Mute" data-tip="Mute" data-hint="M">
+          <span data-show="sound">{% call m::i("volume") %}{% endcall %}</span><span data-show="muted" hidden>{% call m::i("volume-x") %}{% endcall %}</span>
+        </button>
+        <input type="range" class="range volume" id="volume" min="0" max="1" step="0.01" value="1" aria-label="Volume" />
+      </div>
+      <div class="stepper" role="group" aria-label="Playback speed">
+        <button type="button" data-act="slower" aria-label="Slower">−</button>
+        <output id="speed" aria-live="polite">1×</output>
+        <button type="button" data-act="faster" aria-label="Faster">+</button>
+      </div>
+      <label class="check"><input type="checkbox" id="pitch" checked />Keep pitch</label>
+      <button type="button" class="icon-btn small" data-act="loop" aria-pressed="false" aria-label="Loop" data-tip="Loop">{% call m::i("repeat") %}{% endcall %}</button>
+      {%- if kind == "video" %}
+      <button type="button" class="icon-btn small" data-act="fullscreen" aria-label="Full screen" data-tip="Full screen" data-hint="F">
+        <span data-show="windowed">{% call m::i("maximize") %}{% endcall %}</span><span data-show="fullscreen" hidden>{% call m::i("minimize") %}{% endcall %}</span>
+      </button>
+      {%- endif %}
+    </div>
+  </div>
+
+  {%- else if kind == "text" %}
+  <section class="panel" aria-label="File contents">
+    <div class="panel-head">
+      <span class="hint mono" id="text-info">Loading…</span>
+      <button type="button" class="icon-btn small" id="wrap-toggle" aria-pressed="false" aria-label="Wrap lines" data-tip="Wrap lines">{% call m::i("wrap") %}{% endcall %}</button>
+      <button type="button" class="icon-btn small" id="highlight-toggle" aria-pressed="false" aria-label="Highlight syntax" data-tip="Highlight syntax" data-hint="Guesses the language. Remembered for next time.">{% call m::i("code") %}{% endcall %}</button>
+      <button type="button" class="btn secondary small" id="copy-text" disabled>{% call m::i("copy") %}{% endcall %}Copy text</button>
+    </div>
+    <div class="code" id="code" tabindex="0" aria-label="Text">
+      <pre class="gutter" id="gutter" aria-hidden="true"></pre>
+      <pre class="text"><code id="text"></code></pre>
+    </div>
+    <p class="notice" id="text-notice" hidden></p>
+  </section>
+
+  {%- else %}
+  <div class="card empty">
+    {% call m::i("file") %}{% endcall %}
+    <p>There’s no preview for this kind of file.</p>
+    <a class="btn primary" href="{{ raw }}" download="{{ name }}">{% call m::i("download") %}{% endcall %}Download {{ size }}</a>
+  </div>
+  {%- endif %}
+</article>
+{% endblock %}

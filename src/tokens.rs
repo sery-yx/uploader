@@ -1,0 +1,420 @@
+//! Upload keys the admin hands out, each limited to some kinds of files.
+//!
+//! Only a SHA-256 hash of each key is stored; the key itself is shown once, when it's created or
+//! reset. The store is a small JSON file, kept in memory and rewritten on every change.
+
+use std::{
+    collections::BTreeSet,
+    io,
+    path::PathBuf,
+    sync::{LazyLock, RwLock},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use base64::Engine;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::{
+    config::CONFIG,
+    media::{self, Kind},
+};
+
+/// What a key may upload. GIFs are separate from other pictures so a key can be GIF-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Perm {
+    Image,
+    Gif,
+    Video,
+    Audio,
+    Text,
+    File,
+}
+
+impl Perm {
+    pub const ALL: [Perm; 6] = [
+        Perm::Image,
+        Perm::Gif,
+        Perm::Video,
+        Perm::Audio,
+        Perm::Text,
+        Perm::File,
+    ];
+
+    /// The permission a stored extension needs.
+    pub fn for_extension(ext: &str) -> Perm {
+        if ext.eq_ignore_ascii_case("gif") {
+            return Perm::Gif;
+        }
+        match Kind::from_extension(ext) {
+            Kind::Image => Perm::Image,
+            Kind::Video => Perm::Video,
+            Kind::Audio => Perm::Audio,
+            Kind::Text => Perm::Text,
+            Kind::Other => Perm::File,
+        }
+    }
+
+    /// Plural noun for messages: "This key can only upload pictures and GIFs."
+    pub fn plural(self) -> &'static str {
+        match self {
+            Perm::Image => "pictures",
+            Perm::Gif => "GIFs",
+            Perm::Video => "videos",
+            Perm::Audio => "audio",
+            Perm::Text => "text",
+            Perm::File => "other files",
+        }
+    }
+}
+
+/// "pictures", "pictures and GIFs", "pictures, GIFs and videos"
+pub fn describe(perms: &BTreeSet<Perm>) -> String {
+    let words: Vec<_> = perms.iter().map(|p| p.plural()).collect();
+    match words.as_slice() {
+        [] => "nothing".to_owned(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyEntry {
+    pub id: String,
+    pub name: String,
+    /// Hex SHA-256 of the key.
+    hash: String,
+    pub perms: BTreeSet<Perm>,
+    /// Unix seconds.
+    pub created: u64,
+    /// Unix seconds of the last reset, if any.
+    #[serde(default)]
+    pub reset: Option<u64>,
+}
+
+/// What the admin page sees: everything but the hash.
+#[derive(Debug, Serialize)]
+pub struct KeyInfo {
+    pub id: String,
+    pub name: String,
+    pub perms: BTreeSet<Perm>,
+    pub created: u64,
+    pub reset: Option<u64>,
+}
+
+impl From<&KeyEntry> for KeyInfo {
+    fn from(e: &KeyEntry) -> Self {
+        KeyInfo {
+            id: e.id.clone(),
+            name: e.name.clone(),
+            perms: e.perms.clone(),
+            created: e.created,
+            reset: e.reset,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("No key has that id")]
+    NotFound,
+    #[error("{0}")]
+    Invalid(&'static str),
+    #[error("Couldn't save the key list: {0}")]
+    Io(#[from] io::Error),
+}
+
+pub struct KeyStore {
+    path: PathBuf,
+    entries: Vec<KeyEntry>,
+}
+
+pub static KEYS: LazyLock<RwLock<KeyStore>> =
+    LazyLock::new(|| RwLock::new(KeyStore::load(CONFIG.keys_file.clone())));
+
+/// A fresh key: `upl_` and 32 random bytes in URL-safe base64.
+fn new_secret() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    let mut out = String::from("upl_");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_string(bytes, &mut out);
+    out
+}
+
+fn new_id() -> String {
+    let mut bytes = [0u8; 5];
+    rand::rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hash(secret: &str) -> String {
+    Sha256::digest(secret.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn clean_name(name: &str) -> Result<String, StoreError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(StoreError::Invalid("Give the key a name"));
+    }
+    if name.chars().count() > 60 {
+        return Err(StoreError::Invalid("Keep the name to 60 characters"));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(StoreError::Invalid(
+            "The name can't contain control characters",
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+fn check_perms(perms: &BTreeSet<Perm>) -> Result<(), StoreError> {
+    if perms.is_empty() {
+        Err(StoreError::Invalid("Pick at least one kind of file"))
+    } else {
+        Ok(())
+    }
+}
+
+impl KeyStore {
+    fn load(path: PathBuf) -> Self {
+        let entries = match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("{} is not a valid key list: {e}", path.display())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => panic!("Couldn't read {}: {e}", path.display()),
+        };
+        KeyStore { path, entries }
+    }
+
+    /// Writes the list to a temporary file and renames it over the old one, so a crash never
+    /// leaves half a file.
+    fn save(&self) -> io::Result<()> {
+        let json = serde_json::to_string_pretty(&self.entries).map_err(io::Error::other)?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, &self.path)
+    }
+
+    /// Applies `change`, saves, and rolls back if saving fails.
+    fn commit<T>(
+        &mut self,
+        change: impl FnOnce(&mut Vec<KeyEntry>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let before = self.entries.clone();
+        let out = change(&mut self.entries)?;
+        if let Err(e) = self.save() {
+            self.entries = before;
+            return Err(e.into());
+        }
+        Ok(out)
+    }
+
+    pub fn list(&self) -> Vec<KeyInfo> {
+        self.entries.iter().map(KeyInfo::from).collect()
+    }
+
+    /// The permissions of a key, if it exists.
+    pub fn resolve(&self, secret: &str) -> Option<(String, BTreeSet<Perm>)> {
+        let h = hash(secret);
+        self.entries
+            .iter()
+            .find(|e| e.hash == h)
+            .map(|e| (e.name.clone(), e.perms.clone()))
+    }
+
+    pub fn create(
+        &mut self,
+        name: &str,
+        perms: BTreeSet<Perm>,
+    ) -> Result<(String, KeyInfo), StoreError> {
+        let name = clean_name(name)?;
+        check_perms(&perms)?;
+        let secret = new_secret();
+        let entry = KeyEntry {
+            id: new_id(),
+            name,
+            hash: hash(&secret),
+            perms,
+            created: now(),
+            reset: None,
+        };
+        let info = KeyInfo::from(&entry);
+        self.commit(|entries| {
+            entries.push(entry);
+            Ok(())
+        })?;
+        Ok((secret, info))
+    }
+
+    pub fn update(
+        &mut self,
+        id: &str,
+        name: &str,
+        perms: BTreeSet<Perm>,
+    ) -> Result<KeyInfo, StoreError> {
+        let name = clean_name(name)?;
+        check_perms(&perms)?;
+        self.commit(|entries| {
+            let e = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or(StoreError::NotFound)?;
+            e.name = name;
+            e.perms = perms;
+            Ok(KeyInfo::from(&*e))
+        })
+    }
+
+    /// A new value for an existing key; the old one stops working at once.
+    pub fn reset(&mut self, id: &str) -> Result<(String, KeyInfo), StoreError> {
+        let secret = new_secret();
+        let h = hash(&secret);
+        let info = self.commit(|entries| {
+            let e = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or(StoreError::NotFound)?;
+            e.hash = h;
+            e.reset = Some(now());
+            Ok(KeyInfo::from(&*e))
+        })?;
+        Ok((secret, info))
+    }
+
+    pub fn delete(&mut self, id: &str) -> Result<(), StoreError> {
+        self.commit(|entries| {
+            let len = entries.len();
+            entries.retain(|e| e.id != id);
+            if entries.len() == len {
+                Err(StoreError::NotFound)
+            } else {
+                Ok(())
+            }
+        })
+    }
+}
+
+/// Whether a scoped key may store this upload. Both the name's type and what the bytes look
+/// like must be allowed, so a video renamed to `.gif` doesn't get past a GIF-only key.
+pub fn upload_allowed(perms: &BTreeSet<Perm>, extension: &str, sniffed: &str) -> bool {
+    let claimed = Perm::for_extension(extension);
+    if !perms.contains(&claimed) {
+        return false;
+    }
+    let actual = Perm::for_extension(sniffed);
+    if actual == claimed || perms.contains(&actual) {
+        return true;
+    }
+    // SVG is XML, which sniffs as text.
+    claimed == Perm::Image && media::is_svg(extension) && actual == Perm::Text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(p: &[Perm]) -> BTreeSet<Perm> {
+        p.iter().copied().collect()
+    }
+
+    #[test]
+    fn perms_follow_the_extension() {
+        assert_eq!(Perm::for_extension("gif"), Perm::Gif);
+        assert_eq!(Perm::for_extension("GIF"), Perm::Gif);
+        assert_eq!(Perm::for_extension("png"), Perm::Image);
+        assert_eq!(Perm::for_extension("webm"), Perm::Video);
+        assert_eq!(Perm::for_extension("mp3"), Perm::Audio);
+        assert_eq!(Perm::for_extension("txt"), Perm::Text);
+        assert_eq!(Perm::for_extension("zip"), Perm::File);
+        assert_eq!(Perm::for_extension("bin"), Perm::File);
+    }
+
+    #[test]
+    fn scoped_uploads() {
+        let gifs = set(&[Perm::Gif]);
+        assert!(upload_allowed(&gifs, "gif", "gif"));
+        assert!(!upload_allowed(&gifs, "png", "png"));
+        assert!(!upload_allowed(&gifs, "mp4", "mp4"));
+        // a video renamed to .gif
+        assert!(!upload_allowed(&gifs, "gif", "mp4"));
+
+        let pictures = set(&[Perm::Image]);
+        assert!(upload_allowed(&pictures, "jpg", "jpg"));
+        assert!(upload_allowed(&pictures, "jpeg", "jpg"));
+        assert!(!upload_allowed(&pictures, "gif", "gif"));
+        assert!(upload_allowed(&pictures, "svg", "xml"));
+        assert!(upload_allowed(&pictures, "svg", "txt"));
+        assert!(!upload_allowed(&pictures, "png", "txt"));
+
+        let video = set(&[Perm::Video]);
+        assert!(upload_allowed(&video, "mp4", "mp4"));
+        assert!(upload_allowed(&video, "mov", "mov"));
+        assert!(!upload_allowed(&video, "txt", "txt"));
+    }
+
+    #[test]
+    fn describes_perms() {
+        assert_eq!(describe(&set(&[Perm::Gif])), "GIFs");
+        assert_eq!(
+            describe(&set(&[Perm::Image, Perm::Gif])),
+            "pictures and GIFs"
+        );
+        assert_eq!(
+            describe(&set(&[Perm::Image, Perm::Gif, Perm::Video])),
+            "pictures, GIFs and videos"
+        );
+    }
+
+    #[test]
+    fn store_round_trip() {
+        let dir = std::env::temp_dir().join(format!("uploader-keys-{}", new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys.json");
+        let mut store = KeyStore {
+            path: path.clone(),
+            entries: Vec::new(),
+        };
+
+        let (secret, info) = store.create("Phone", set(&[Perm::Image])).unwrap();
+        assert!(secret.starts_with("upl_"));
+        assert_eq!(store.resolve(&secret).unwrap().1, set(&[Perm::Image]));
+        assert!(store.resolve("upl_wrong").is_none());
+        // The secret itself is never written down.
+        assert!(!std::fs::read_to_string(&path).unwrap().contains(&secret));
+
+        let (fresh, _) = store.reset(&info.id).unwrap();
+        assert!(store.resolve(&secret).is_none());
+        assert!(store.resolve(&fresh).is_some());
+
+        store
+            .update(&info.id, "Phone 2", set(&[Perm::Gif]))
+            .unwrap();
+        let reloaded = KeyStore::load(path.clone());
+        assert_eq!(reloaded.list()[0].name, "Phone 2");
+        assert_eq!(reloaded.resolve(&fresh).unwrap().1, set(&[Perm::Gif]));
+
+        assert!(matches!(
+            store.create(" ", set(&[Perm::Gif])),
+            Err(StoreError::Invalid(_))
+        ));
+        assert!(matches!(
+            store.create("x", BTreeSet::new()),
+            Err(StoreError::Invalid(_))
+        ));
+        store.delete(&info.id).unwrap();
+        assert!(matches!(store.delete(&info.id), Err(StoreError::NotFound)));
+        assert!(store.resolve(&fresh).is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+}

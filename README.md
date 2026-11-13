@@ -1,60 +1,78 @@
 # uploader
 
-This is a very basic (private) file uploader and (public) host that's still in development.
-You can only upload files with a key specified in the config,
-but everyone can open the link.
+A small private file uploader with a public viewer, forked from
+[Nerixyz/uploader](https://github.com/Nerixyz/uploader) and restyled in the cyex design.
+Only people with the upload key can upload; anyone with a link can open it.
 
-## Notable Features
+## What it does
 
-- Filetypes are automatically inferred
-- Special views for text and audio files
+- Upload from the page (pick, drag in or paste a screenshot with Ctrl+V), ShareX, Chatterino or curl.
+- **One link per file.** Opening it in a browser shows a viewer; `<img>`/`<video>` tags, chat
+  embeds (Discord, Chatterino) and command-line tools get the file itself. `/raw/<name>` always
+  returns the file.
+- Viewers for **pictures and GIFs** (fit or full size, pixel art stays crisp), **video** and
+  **audio** (custom player: seek, volume, speed, keep pitch, loop, full screen, `#t=1:23` links),
+  **text and code** (line numbers, wrap, syntax highlighting), and a download card for anything else.
+- File types come from the upload's name or, without one, from the file's first bytes.
+- Recent uploads and their deletion links are kept in your browser.
+- Dark and light themes.
 
-## Building and Running
+## Running it
 
-- Create a `config.toml` and configure your instance:
+1. Copy `config.example.toml` to `config.toml` and fill it in:
 
-```toml
-bind = "127.0.0.1:4833"
-file_dir = "uploads"
-domain = "https://i.nerixyz.de"
-# You can use anything here really.
-# Make sure the header is sufficiently long.
-authorization = "Bearer <token>"
-# Base64, Used for deletion links
-# Must be 28bytes (224bit) long
-# Use e.g. `openssl rand -base64 28` to generate
-secret = "..."
-```
+   ```toml
+   bind = "127.0.0.1:4833"
+   file_dir = "uploads"
+   domain = "https://i.example.com"   # public origin, no trailing slash
+   authorization = "Bearer <token>"   # any long random value
+   secret = "..."                     # `openssl rand -base64 28`, signs deletion links
+   max_upload_mib = 256               # optional, default 256
+   ```
 
-- Build/Run the project `cargo b -r` or `cargo r -r`
+2. `cargo run -r` (run it from the repository root, it serves `static/`).
+
+Put it behind a reverse proxy for HTTPS. If the proxy limits body size, raise that limit to
+match `max_upload_mib`.
 
 ### Cleaning
 
-To clean files, use the `clean` subcommand - `cargo r -r -- clean`:
+Remove old files with `cargo r -r -- clean` (`--max-age 1y`, `--metric modified|accessed|created`,
+`--dry-run`).
 
-```text
-$ cargo r -r -- clean --help
-Clean the oldest files
+## Keys
 
-Usage: uploader clean [OPTIONS]
+The `authorization` value in `config.toml` is the **admin key**: it can upload anything and
+manage other keys. Signed in with it, open **Keys** (`/admin`) to:
 
-Options:
-  -a, --max-age <MAX_AGE>  Files older than this age will be removed [default: 1y]
-      --dry-run            Don't remove files, print them to stdout
-  -m, --metric <METRIC>    Which metric of a file to use to determine its age [default: modified] [possible values: accessed, modified, created]
-  -h, --help               Print help
-```
+- **Create** a key limited to any mix of pictures, GIFs, video, audio, text and other files
+  (pictures don't include GIFs, so a key can be GIF-only). The key is shown once, with a
+  ready-made ShareX config to download.
+- **Edit** a key's name or what it may upload.
+- **Reset** a key: it gets a new value and the old one stops working at once.
+- **Delete** a key. Files uploaded with it stay online.
 
-## Usage
+A scoped key is checked against both the file's name and its contents, so a video renamed to
+`.gif` is refused by a GIF-only key (`403 This key can only upload GIFs`). Keys are stored hashed
+(SHA-256) in `keys_file` (default `keys.json`); scoped keys look like `upl_…` and work with or
+without a `Bearer ` prefix.
 
-You can upload either by sending a `multipart/form-data` request to `/upload` (the first field will be used) or by sending a `POST` request to `/upload`.
-In both cases a valid `Authorization` header must be used.
+API (admin key in `Authorization`): `GET /api/keys`, `POST /api/keys {name, perms}`,
+`PUT /api/keys/{id} {name, perms}`, `POST /api/keys/{id}/reset`, `DELETE /api/keys/{id}`.
+`perms` is a list of `image`, `gif`, `video`, `audio`, `text`, `file`. Any key can call
+`GET /api/key` to see what it may upload.
 
-## Uploader Configuration
+## Uploading
+
+Send a `multipart/form-data` request to `/upload` (the first field is the file) or a raw `POST`
+body, with the `Authorization` header set to the admin key or a scoped key. Raw posts can name the file
+with an `X-Upload-Filename` header (percent-encoded); only its extension is used.
+
+## Client configuration
 
 ### ShareX
 
-Use the following ShareX config and replace `{config.domain}` and `{config.authorization}` with the respective values from your [`config.toml`](#building-and-running):
+Use the following ShareX config and replace `{config.domain}` and `{config.authorization}` with the respective values from your [`config.toml`](#running-it):
 
 ```json
 {
@@ -75,7 +93,7 @@ Use the following ShareX config and replace `{config.domain}` and `{config.autho
 
 ### Chatterino
 
-Use the following configuration and replace `{config.domain}` and `{config.authorization}` with the respective values from your [`config.toml`](#building-and-running):
+Use the following configuration and replace `{config.domain}` and `{config.authorization}` with the respective values from your [`config.toml`](#running-it):
 
 ```json
 {
@@ -109,19 +127,23 @@ type UploadResponse =
   | {
       link: string;
       deletion_link: string;
+      kind: 'image' | 'video' | 'audio' | 'text' | 'file';
     };
 ```
 
-## Screenshots
+## Security notes
 
-### Home
+- Raw files are served with `Content-Security-Policy: sandbox` and `nosniff`, so an uploaded
+  SVG or HTML file can't run script on the uploader's origin (where the upload key is stored).
+  `.html` uploads are stored as `.txt`.
+- Pages only load the uploader's own scripts, styles and fonts.
+- Deletion links are HMAC-SHA224 signatures of the file name, checked in constant time. Links made
+  before the fork keep working with the same `secret`.
 
-<img src="https://user-images.githubusercontent.com/19953266/195892956-0cb2bb14-f81d-4378-8ea6-97d8d02c2570.png" height="300px"/>
+## Development
 
-### Text View
-
-<img src="https://user-images.githubusercontent.com/19953266/195894115-654a7661-9d10-4c09-bac7-c1ba0d20053c.png" height="300px"/>
-
-### Audio View
-
-<img src="https://user-images.githubusercontent.com/19953266/195894521-d1910407-54e6-412c-98af-e714ec6647e6.png" height="300px"/>
+```sh
+cargo test
+cargo clippy --all-targets
+npm run check-format   # prettier for static/ (templates are Askama and skipped)
+```

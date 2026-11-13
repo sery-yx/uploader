@@ -1,0 +1,13 @@
+# Copy to config.toml and fill in.
+bind = "127.0.0.1:4833"
+file_dir = "uploads"
+# Public origin, no trailing slash. Links in upload responses use it.
+domain = "https://i.example.com"
+# Any long random value; clients send it as the Authorization header.
+authorization = "Bearer <token>"
+# Base64, at least 28 bytes. Signs deletion links: `openssl rand -base64 28`
+secret = "..."
+# Largest accepted upload in MiB (default 256).
+max_upload_mib = 256
+# Where scoped upload keys are kept, hashed (default keys.json). Manage them at /admin.
+keys_file = "keys.json"
