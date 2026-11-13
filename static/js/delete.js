@@ -1,4 +1,4 @@
-import { errorMessage, store, toast } from './ui.js';
+import { STORAGE, errorMessage, store, toast } from './ui.js';
 
 const button = document.getElementById('confirm-delete');
 
@@ -11,15 +11,21 @@ button?.addEventListener('click', async () => {
     if (!res.ok && res.status !== 404) {
       throw new Error(errorMessage(res.status, await res.text()));
     }
-    // Forget it in the uploader's recent list too.
-    const deletion = location.origin + location.pathname;
-    try {
-      const list = JSON.parse(store.get('cyexUploaderRecent') ?? '[]');
-      if (Array.isArray(list)) {
-        store.set('cyexUploaderRecent', JSON.stringify(list.filter(r => r?.deletion !== deletion)));
+    // Forget it in the uploader's recent list too. Compare paths: the stored link carries the
+    // configured domain, which needn't match the address this page was opened on.
+    const pathOf = url => {
+      try {
+        return new URL(url, location.href).pathname;
+      } catch {
+        return null;
       }
-    } catch {
-      /* nothing remembered */
+    };
+    const list = store.json(STORAGE.recent, []);
+    if (Array.isArray(list)) {
+      store.set(
+        STORAGE.recent,
+        JSON.stringify(list.filter(r => pathOf(r?.deletion) !== location.pathname)),
+      );
     }
     for (const node of document.querySelectorAll('[data-step]'))
       node.hidden = node.dataset.step !== 'done';

@@ -1,4 +1,5 @@
 import {
+  STORAGE,
   copy,
   formatDecimal,
   formatDuration,
@@ -211,10 +212,10 @@ function initPlayer() {
     fill(volume);
   };
   // Restore what was playing last time: the level and whether it was muted.
-  const savedVolume = Number(store.get('cyexUploaderVolume'));
-  if (store.get('cyexUploaderVolume') != null && savedVolume > 0 && savedVolume <= 1)
+  const savedVolume = Number(store.get(STORAGE.volume));
+  if (store.get(STORAGE.volume) != null && savedVolume > 0 && savedVolume <= 1)
     media.volume = savedVolume;
-  media.muted = store.get('cyexUploaderMuted') === '1';
+  media.muted = store.get(STORAGE.muted) === '1';
   volume.addEventListener('input', () => {
     media.volume = Number(volume.value);
     media.muted = media.volume === 0;
@@ -227,8 +228,8 @@ function initPlayer() {
   media.addEventListener('volumechange', () => {
     syncVolume();
     // Level 0 is kept as "muted", so a reload never comes back silent with no reason shown.
-    if (media.volume > 0) store.set('cyexUploaderVolume', String(media.volume));
-    store.set('cyexUploaderMuted', media.muted || media.volume === 0 ? '1' : null);
+    if (media.volume > 0) store.set(STORAGE.volume, String(media.volume));
+    store.set(STORAGE.muted, media.muted || media.volume === 0 ? '1' : null);
   });
   syncVolume();
 
@@ -432,13 +433,13 @@ async function initText() {
   const setWrap = on => {
     code.classList.toggle('is-wrapped', on);
     wrapBtn.setAttribute('aria-pressed', String(on));
-    store.set('cyexUploaderWrap', on ? '1' : null);
+    store.set(STORAGE.wrap, on ? '1' : null);
   };
   wrapBtn.addEventListener('click', () => {
     setWrap(!code.classList.contains('is-wrapped'));
     syncScrollable();
   });
-  setWrap(store.get('cyexUploaderWrap') === '1');
+  setWrap(store.get(STORAGE.wrap) === '1');
   syncScrollable();
 
   // highlight
@@ -450,7 +451,7 @@ async function initText() {
   let highlighted = false;
   const setHighlight = async on => {
     hlBtn.setAttribute('aria-pressed', String(on));
-    store.set('cyexUploaderHighlight', on ? '1' : null);
+    store.set(STORAGE.highlight, on ? '1' : null);
     if (!on) {
       out.textContent = text;
       out.className = '';
@@ -488,7 +489,7 @@ async function initText() {
   hlBtn.addEventListener('click', () =>
     setHighlight(hlBtn.getAttribute('aria-pressed') !== 'true'),
   );
-  if (store.get('cyexUploaderHighlight') === '1') setHighlight(true);
+  if (store.get(STORAGE.highlight) === '1') setHighlight(true);
 }
 
 if (kind === 'image') initImage();

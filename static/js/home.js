@@ -7,6 +7,7 @@ import {
   groupThousands,
   icon,
   KEY_STORAGE,
+  STORAGE,
   PERM_LABELS,
   PERM_NOUNS,
   describePerms,
@@ -16,7 +17,7 @@ import {
   toast,
   whoami,
 } from './ui.js';
-const RECENT_STORAGE = 'cyexUploaderRecent';
+const RECENT_STORAGE = STORAGE.recent;
 const RECENT_MAX = 30;
 
 const $ = id => document.getElementById(id);

@@ -137,20 +137,29 @@ export function toast(title, { type = 'info', detail } = {}) {
   let timer;
   let remaining = LIFETIME[type];
   let started;
+  let held = false;
   const dismiss = () => {
     clearTimeout(timer);
+    if (node.classList.contains('leaving')) return;
     if (reducedMotion()) return node.remove();
     node.classList.add('leaving');
     node.addEventListener('transitionend', () => node.remove(), { once: true });
     setTimeout(() => node.remove(), 400);
   };
   const run = () => {
+    held = false;
     started = performance.now();
-    timer = setTimeout(dismiss, remaining);
+    timer = setTimeout(dismiss, Math.max(0, remaining));
   };
+  // Hover and focus both hold the toast; count the time only once.
   const hold = () => {
+    if (held) return;
+    held = true;
     clearTimeout(timer);
     remaining -= performance.now() - started;
+  };
+  const release = () => {
+    if (!node.matches(':hover') && !node.contains(document.activeElement)) run();
   };
   node.restart = () => {
     clearTimeout(timer);
@@ -164,12 +173,15 @@ export function toast(title, { type = 'info', detail } = {}) {
   drain.style.animationDuration = `${remaining}ms`;
   close.addEventListener('click', dismiss);
   node.addEventListener('mouseenter', hold);
-  node.addEventListener('mouseleave', run);
+  node.addEventListener('mouseleave', release);
   node.addEventListener('focusin', hold);
-  node.addEventListener('focusout', run);
+  node.addEventListener('focusout', () => setTimeout(release));
+  node.dismiss = dismiss;
 
   stack.append(node);
-  while (stack.children.length > 3) stack.firstElementChild.remove();
+  // At most three; the oldest leaves the normal way.
+  const live = [...stack.children].filter(t => !t.classList.contains('leaving'));
+  for (const old of live.slice(0, Math.max(0, live.length - 3))) old.dismiss?.();
   run();
 }
 
@@ -182,7 +194,28 @@ export function errorMessage(status, body) {
   } catch {
     /* not JSON */
   }
-  return body?.trim() || `The server answered ${status}.`;
+  // A proxy's HTML error page or a long body is noise in a toast.
+  const text = body?.trim() ?? '';
+  return text && text.length <= 140 && !text.includes('<')
+    ? text
+    : `The server answered ${status}.`;
+}
+
+// ---------- announcements ----------
+
+let announcer = null;
+
+/** Reads `text` to screen readers without showing anything. */
+export function announce(text) {
+  if (!announcer) {
+    announcer = el('div', 'sr-only');
+    announcer.setAttribute('role', 'status');
+    announcer.setAttribute('aria-live', 'polite');
+    document.body.append(announcer);
+  }
+  // Clear first so the same words twice in a row are read twice.
+  announcer.textContent = '';
+  setTimeout(() => (announcer.textContent = text), 50);
 }
 
 // ---------- copy ----------
@@ -230,12 +263,16 @@ export async function copy(text, button) {
       n => n.nodeType === Node.TEXT_NODE && n.textContent.trim(),
     );
     clearTimeout(button._copiedTimer);
+    // Hold the width so "Copied" doesn't nudge the field next to it.
+    button.style.minWidth = `${button.getBoundingClientRect().width}px`;
     if (label) label.textContent = 'Copied';
     svg?.querySelector('use')?.setAttribute('href', `${ICONS}#check`);
-    if (!label) toast('Copied.', { type: 'success' });
+    if (label) announce('Copied');
+    else toast('Copied.', { type: 'success' });
     button._copiedTimer = setTimeout(() => {
       if (label) label.textContent = button.dataset.label.replace(/^\s+/, '');
       svg?.querySelector('use')?.setAttribute('href', `${ICONS}#${button.dataset.icon ?? 'copy'}`);
+      button.style.minWidth = '';
     }, 1600);
   } else {
     toast('Copied.', { type: 'success' });
@@ -247,7 +284,7 @@ export async function copy(text, button) {
 
 let tip = null;
 let tipTimer = 0;
-let lastHidden = 0;
+let lastHidden = -Infinity; // no tooltip yet, so the first one waits
 
 function showTip(target) {
   hideTip();
@@ -328,8 +365,11 @@ function initTheme() {
     sync();
   };
   button.addEventListener('click', () => {
-    if (document.startViewTransition && !reducedMotion()) document.startViewTransition(apply);
-    else apply();
+    if (!document.startViewTransition || reducedMotion()) return apply();
+    // Colours swap at once inside the cross-fade instead of animating underneath it.
+    root.classList.add('theme-switching');
+    const t = document.startViewTransition(apply);
+    t.finished.finally(() => root.classList.remove('theme-switching'));
   });
   sync();
 }
@@ -339,8 +379,17 @@ initTooltips();
 
 // ---------- upload key ----------
 
-// Same storage name as upstream, so a key saved before the fork keeps working.
-export const KEY_STORAGE = 'uploader-authorization';
+/** Every browser-storage name the pages use. The key's name is upstream's, so old keys work. */
+export const STORAGE = {
+  key: 'uploader-authorization',
+  recent: 'cyexUploaderRecent',
+  volume: 'cyexUploaderVolume',
+  muted: 'cyexUploaderMuted',
+  wrap: 'cyexUploaderWrap',
+  highlight: 'cyexUploaderHighlight',
+  who: 'cyexUploaderWho',
+};
+export const KEY_STORAGE = STORAGE.key;
 
 export const PERM_LABELS = {
   image: 'Pictures',
@@ -375,36 +424,47 @@ export function describePerms(perms) {
  * What the saved key may do: `{admin, name, perms}`, `null` without a key, or `{invalid: true}`
  * when the server refuses it. Cached for the tab so viewers don't ask on every page.
  */
+const WHO_TTL = 60_000; // a reset or deleted key shows up within a minute on other pages
+let whoInFlight = null;
+
 export async function whoami({ fresh = false } = {}) {
   const key = store.get(KEY_STORAGE);
   if (!key) return null;
   if (!fresh) {
     try {
-      const cached = JSON.parse(sessionStorage.getItem('cyexUploaderWho'));
-      if (cached?.key === key) return cached.who;
+      const cached = JSON.parse(sessionStorage.getItem(STORAGE.who));
+      if (cached?.key === key && Date.now() - cached.at < WHO_TTL) return cached.who;
     } catch {
       /* no cache */
     }
   }
-  try {
-    const res = await fetch('/api/key', { headers: { Authorization: key } });
-    const who = res.ok ? await res.json() : res.status === 401 ? { invalid: true } : null;
-    if (who) {
-      try {
-        sessionStorage.setItem('cyexUploaderWho', JSON.stringify({ key, who }));
-      } catch {
-        /* storage unavailable */
+  // The page and its header both ask on load; share one request.
+  if (whoInFlight?.key === key) return whoInFlight.promise;
+  const promise = (async () => {
+    try {
+      const res = await fetch('/api/key', { headers: { Authorization: key } });
+      const who = res.ok ? await res.json() : res.status === 401 ? { invalid: true } : null;
+      if (who) {
+        try {
+          sessionStorage.setItem(STORAGE.who, JSON.stringify({ key, who, at: Date.now() }));
+        } catch {
+          /* storage unavailable */
+        }
       }
+      return who;
+    } catch {
+      return null; // offline: don't guess
+    } finally {
+      whoInFlight = null;
     }
-    return who;
-  } catch {
-    return null; // offline: don't guess
-  }
+  })();
+  whoInFlight = { key, promise };
+  return promise;
 }
 
 export function forgetWho() {
   try {
-    sessionStorage.removeItem('cyexUploaderWho');
+    sessionStorage.removeItem(STORAGE.who);
   } catch {
     /* storage unavailable */
   }
