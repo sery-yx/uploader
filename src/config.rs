@@ -63,7 +63,7 @@ where
         type Value = Secret;
 
         fn expecting(&self, f: &mut Formatter) -> std::fmt::Result {
-            write!(f, "a base64 string of 28 bytes")
+            write!(f, "a base64 string of 28 to 64 bytes")
         }
 
         fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>

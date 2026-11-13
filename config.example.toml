@@ -3,7 +3,8 @@ bind = "127.0.0.1:4833"
 file_dir = "uploads"
 # Public origin, no trailing slash. Links in upload responses use it.
 domain = "https://i.example.com"
-# Any long random value; clients send it as the Authorization header.
+# The admin key: it can upload anything and manage keys. Make it long and random,
+# e.g. "Bearer " + `openssl rand -base64 32`. Clients send it as the Authorization header.
 authorization = "Bearer <token>"
 # Base64, at least 28 bytes. Signs deletion links: `openssl rand -base64 28`
 secret = "..."

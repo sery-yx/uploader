@@ -25,7 +25,7 @@ Only people with the upload key can upload; anyone with a link can open it.
    bind = "127.0.0.1:4833"
    file_dir = "uploads"
    domain = "https://i.example.com"   # public origin, no trailing slash
-   authorization = "Bearer <token>"   # any long random value
+   authorization = "Bearer <token>"   # the admin key: long and random (`openssl rand -base64 32`)
    secret = "..."                     # `openssl rand -base64 28`, signs deletion links
    max_upload_mib = 256               # optional, default 256
    ```

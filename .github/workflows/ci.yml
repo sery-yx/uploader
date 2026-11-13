@@ -1,10 +1,10 @@
 name: Ci
 
 on:
+  # Every branch of the fork, not just upstream's master.
   push:
-    branches: ['master']
+    branches: ['**']
   pull_request:
-    branches: ['master']
 
 env:
   CARGO_TERM_COLOR: always
