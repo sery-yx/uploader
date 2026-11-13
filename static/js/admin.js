@@ -1,11 +1,13 @@
 import {
   KEY_STORAGE,
-  PERM_LABELS,
+  announce,
   copy,
   el,
   errorMessage,
   formatDate,
   icon,
+  kinds,
+  perm,
   setLabel,
   store,
   toast,
@@ -13,7 +15,7 @@ import {
 } from './ui.js';
 
 const $ = id => document.getElementById(id);
-const PERMS = Object.keys(PERM_LABELS);
+const PERMS = kinds().perms.map(p => p.id);
 
 /** Calls the key API with the saved admin key; throws an Error with the server's message. */
 async function api(method, path, body) {
@@ -32,13 +34,13 @@ async function api(method, path, body) {
 /** A row of permission checkboxes; returns a getter for the ticked ones. */
 function permChecks(container, ticked = []) {
   container.replaceChildren();
-  const inputs = PERMS.map(perm => {
+  const inputs = PERMS.map(id => {
     const label = el('label', 'check');
     const input = el('input');
     input.type = 'checkbox';
-    input.value = perm;
-    input.checked = ticked.includes(perm);
-    label.append(input, PERM_LABELS[perm]);
+    input.value = id;
+    input.checked = ticked.includes(id);
+    label.append(input, perm(id).label);
     container.append(label);
     return input;
   });
@@ -57,15 +59,16 @@ function showSecret(token, key, heading) {
   $('secret').focus();
 }
 
-function hideSecret() {
+function hideSecret({ focus = false } = {}) {
   lastSecret = null;
   $('secret-value').value = '';
   $('secret').hidden = true;
+  if (focus) $('new-name').focus();
 }
 
 $('secret-copy').addEventListener('click', e => copy($('secret-value').value, e.currentTarget));
 $('secret-value').addEventListener('focus', e => e.target.select());
-$('secret-done').addEventListener('click', hideSecret);
+$('secret-done').addEventListener('click', () => hideSecret({ focus: true }));
 
 // A .sxcu file ShareX imports with a double-click.
 $('sharex').addEventListener('click', () => {
@@ -104,22 +107,35 @@ $('create-form').addEventListener('submit', async e => {
   const button = e.submitter ?? $('create-form').querySelector('[type=submit]');
   const name = $('new-name').value.trim();
   const perms = getNewPerms();
-  if (!name) return $('new-name').focus();
+  if (!name) {
+    toast('Give the key a name.', {
+      type: 'error',
+      detail: 'Who or what it’s for, so you can find it later.',
+    });
+    $('new-name').focus();
+    return;
+  }
   if (perms.length === 0) {
     toast('Pick at least one kind of file.', { type: 'error' });
     return;
   }
+  const label = button.lastChild;
   button.disabled = true;
+  label.textContent = 'Creating…';
+  let created;
   try {
-    const { token, key } = await api('POST', '/api/keys', { name, perms });
-    $('new-name').value = '';
-    showSecret(token, key, `Key created for ${key.name}`);
-    await load();
+    created = await api('POST', '/api/keys', { name, perms });
   } catch (err) {
     toast('Couldn’t create the key.', { type: 'error', detail: err.message });
+    return;
   } finally {
     button.disabled = false;
+    label.textContent = 'Create key';
   }
+  $('new-name').value = '';
+  showSecret(created.token, created.key, `Key created for ${created.key.name}`);
+  // The key exists either way; a failed refresh is only about the list.
+  await reload();
 });
 
 // ---------- list ----------
@@ -131,27 +147,32 @@ $('create-form').addEventListener('submit', async e => {
 function armed(button, note, row, action) {
   let timer = 0;
   let noteEl = null;
+  const restingName = button.getAttribute('aria-label');
   const disarm = () => {
     clearTimeout(timer);
     button.classList.remove('armed');
+    button.setAttribute('aria-label', restingName);
     noteEl?.remove();
     noteEl = null;
   };
   button.addEventListener('click', async () => {
     if (!button.classList.contains('armed')) {
       button.classList.add('armed');
+      button.setAttribute('aria-label', note);
       noteEl = el('span', 'armed-note', note);
-      noteEl.setAttribute('role', 'status');
+      noteEl.setAttribute('aria-hidden', 'true'); // announced below, not read twice
       row.append(noteEl);
+      announce(note);
       timer = setTimeout(disarm, 3000);
       return;
     }
     disarm();
-    button.disabled = true;
+    // aria-disabled keeps focus here while the request runs.
+    button.setAttribute('aria-disabled', 'true');
     try {
       await action();
     } finally {
-      button.disabled = false;
+      button.removeAttribute('aria-disabled');
     }
   });
   button.addEventListener('blur', disarm);
@@ -171,8 +192,8 @@ function renderRow(key) {
   const main = el('div', 'key-main');
   main.append(el('span', 'key-name', key.name));
   const chips = el('div', 'chips');
-  for (const perm of PERMS)
-    if (key.perms.includes(perm)) chips.append(el('span', 'chip', PERM_LABELS[perm]));
+  for (const id of PERMS)
+    if (key.perms.includes(id)) chips.append(el('span', 'chip', perm(id).label));
   main.append(chips);
   const dates = [`Created ${formatDate(key.created * 1000)}`];
   if (key.reset) dates.push(`reset ${formatDate(key.reset * 1000)}`);
@@ -182,7 +203,12 @@ function renderRow(key) {
   const edit = iconButton('pencil', 'Edit');
   const reset = iconButton('rotate', 'Reset key', 'Makes a new key. The old one stops working.');
   const del = iconButton('trash', 'Delete key', 'The key stops working. Its uploads stay online.');
+  // The tooltip stays short; the accessible name says which key.
+  edit.setAttribute('aria-label', `Edit ${key.name}`);
+  reset.setAttribute('aria-label', `Reset ${key.name}`);
+  del.setAttribute('aria-label', `Delete ${key.name}`);
   tools.append(edit, reset, del);
+  row.dataset.id = key.id;
   row.append(main, tools);
 
   edit.addEventListener('click', () => {
@@ -227,34 +253,41 @@ function renderRow(key) {
       save.disabled = true;
       try {
         await api('PUT', `/api/keys/${key.id}`, { name: nameInput.value.trim(), perms });
-        toast('Key saved.', { type: 'success' });
-        await load();
       } catch (err) {
         save.disabled = false;
         toast('Couldn’t save the key.', { type: 'error', detail: err.message });
+        return;
       }
+      toast('Key saved.', { type: 'success' });
+      await reload({ focusId: key.id, focus: 'edit' });
     });
   });
 
-  armed(reset, 'Click again to reset. The old key stops working.', row, async () => {
+  armed(reset, `Click again to reset ${key.name}. The old key stops working.`, row, async () => {
     try {
       const { token, key: fresh } = await api('POST', `/api/keys/${key.id}/reset`);
       showSecret(token, fresh, `New key for ${fresh.name}`);
-      await load();
     } catch (err) {
       toast('Couldn’t reset the key.', { type: 'error', detail: err.message });
+      return;
     }
+    await reload();
   });
 
-  armed(del, 'Click again to delete.', row, async () => {
+  armed(del, `Click again to delete ${key.name}.`, row, async () => {
     try {
       await api('DELETE', `/api/keys/${key.id}`);
-      if (lastSecret?.key.id === key.id) hideSecret();
-      toast('Key deleted.', { detail: 'Files uploaded with it stay online.' });
-      await load();
     } catch (err) {
       toast('Couldn’t delete the key.', { type: 'error', detail: err.message });
+      return;
     }
+    if (lastSecret?.key.id === key.id) hideSecret();
+    toast('Key deleted.', { detail: 'Files uploaded with it stay online.' });
+    // Focus the next row's delete button (or the previous one, or the name field).
+    const rows = [...$('keys-list').children];
+    const at = rows.indexOf(row);
+    const next = rows[at + 1] ?? rows[at - 1];
+    await reload({ focusId: next?.dataset.id, focus: 'delete' });
   });
 
   return row;
@@ -266,21 +299,45 @@ async function load() {
   $('keys-list').hidden = list.length === 0;
   $('keys-empty').hidden = list.length > 0;
   $('keys-count').textContent = list.length ? String(list.length) : '';
-  // Newest first.
-  list.sort((a, b) => b.created - a.created);
-  $('keys-list').replaceChildren(...list.map(renderRow));
+  // Newest first. The server lists in creation order, so that breaks ties within a second.
+  const order = list.map((k, i) => [k, i]);
+  order.sort(([a, i], [b, j]) => b.created - a.created || j - i);
+  $('keys-list').replaceChildren(...order.map(([k]) => renderRow(k)));
+}
+
+/**
+ * Reloads the list after a change and puts focus somewhere that still exists: the given row's
+ * button, else the name field. A failed reload only says so; the change itself went through.
+ */
+async function reload({ focusId, focus } = {}) {
+  const hadFocus =
+    document.activeElement === document.body || $('keys-list').contains(document.activeElement);
+  try {
+    await load();
+  } catch (err) {
+    toast('Couldn’t refresh the list.', { type: 'error', detail: err.message });
+  }
+  if (!focusId && !hadFocus) return;
+  const row = focusId && $('keys-list').querySelector(`[data-id="${CSS.escape(focusId)}"]`);
+  const index = focus === 'delete' ? 2 : 0;
+  const target = row?.querySelectorAll('.row-tools button')[index];
+  (target ?? $('new-name')).focus();
 }
 
 // ---------- start ----------
 
+// Show the form and the loading row at once; the key check and the list load side by side.
+$('admin').hidden = false;
+const listed = load().catch(err => err);
 const who = await whoami({ fresh: true });
 if (who?.admin) {
-  $('admin').hidden = false;
-  load().catch(err => {
+  const err = await listed;
+  if (err instanceof Error) {
     $('keys-loading').hidden = true;
     toast('Couldn’t load the keys.', { type: 'error', detail: err.message });
-  });
+  }
 } else {
+  $('admin').hidden = true;
   $('not-admin').hidden = false;
   if (who && !who.invalid)
     $('not-admin-text').textContent =

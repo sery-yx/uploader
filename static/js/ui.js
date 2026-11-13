@@ -391,33 +391,49 @@ export const STORAGE = {
 };
 export const KEY_STORAGE = STORAGE.key;
 
-export const PERM_LABELS = {
-  image: 'Pictures',
-  gif: 'GIFs',
-  video: 'Video',
-  audio: 'Audio',
-  text: 'Text',
-  file: 'Other files',
-};
+let kindTable = null;
 
-/** Plural nouns for sentences, matching the server's messages. */
-export const PERM_NOUNS = {
-  image: 'pictures',
-  gif: 'GIFs',
-  video: 'videos',
-  audio: 'audio',
-  text: 'text',
-  file: 'other files',
-};
+/**
+ * The server's permission table, rendered into the page (`data-kinds`) so the browser classifies
+ * files exactly like the server does: `{perms: [{id, label, one, noun}], exts: {ext: id}}`.
+ */
+export function kinds() {
+  if (!kindTable) {
+    try {
+      kindTable = JSON.parse(document.querySelector('[data-kinds]')?.dataset.kinds ?? '');
+    } catch {
+      kindTable = null;
+    }
+    kindTable ??= { perms: [], exts: {} };
+  }
+  return kindTable;
+}
 
-/** "pictures", "pictures and GIFs", "pictures, GIFs and videos" */
-export function describePerms(perms) {
-  const words = Object.keys(PERM_NOUNS)
-    .filter(p => perms.includes(p))
-    .map(p => PERM_NOUNS[p]);
+/** `{id, label, one, noun}` for a permission id like `gif`. */
+export const perm = id => kinds().perms.find(p => p.id === id);
+
+/** "pictures", "pictures and GIFs", "pictures, GIFs and videos", in the server's order. */
+export function describePerms(ids) {
+  const words = kinds()
+    .perms.filter(p => ids.includes(p.id))
+    .map(p => p.noun);
   return words.length < 2
     ? (words[0] ?? 'nothing')
     : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`;
+}
+
+/**
+ * The permission a file needs. The extension decides, as on the server (browsers leave mkv,
+ * flac, opus and most code untyped); an unknown or missing extension falls back to the type.
+ */
+export function permOfFile(file) {
+  const dot = file.name.lastIndexOf('.');
+  const ext = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : '';
+  const known = kinds().exts[ext];
+  if (known) return known;
+  if (file.type === 'image/gif') return 'gif';
+  const top = file.type.split('/')[0];
+  return ['image', 'video', 'audio', 'text'].includes(top) ? top : 'file';
 }
 
 /**

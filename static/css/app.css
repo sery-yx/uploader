@@ -1550,3 +1550,34 @@ textarea.field {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+.drop.picked {
+  cursor: default;
+  min-height: 0;
+  padding: 16px;
+  border-style: solid;
+}
+.picked-meta + .btn {
+  flex: none;
+}
+.result-head {
+  margin: 0;
+  font-size: inherit;
+}
+.key-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.field-error {
+  margin: 6px 0 0;
+  color: var(--red);
+  font-size: var(--text-hint);
+}
+.field[aria-invalid='true'] {
+  border-color: var(--red);
+}
+.icon-btn[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: progress;
+}
