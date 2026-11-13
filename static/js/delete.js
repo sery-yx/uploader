@@ -1,6 +1,7 @@
 import { STORAGE, errorMessage, store, toast } from './ui.js';
 
 const button = document.getElementById('confirm-delete');
+const section = document.getElementById('delete');
 
 button?.addEventListener('click', async () => {
   button.disabled = true;
@@ -29,10 +30,12 @@ button?.addEventListener('click', async () => {
     }
     for (const node of document.querySelectorAll('[data-step]'))
       node.hidden = node.dataset.step !== 'done';
+    section.setAttribute('aria-labelledby', 'deleted-title');
     document.getElementById('deleted').focus();
   } catch (e) {
     button.disabled = false;
     label.textContent = 'Delete file';
+    button.focus();
     toast('Couldn’t delete the file.', { type: 'error', detail: e.message });
   }
 });

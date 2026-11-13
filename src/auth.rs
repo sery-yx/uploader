@@ -10,7 +10,7 @@ use constant_time_eq::constant_time_eq;
 
 use crate::{
     config::CONFIG,
-    tokens::{Perm, KEYS},
+    tokens::{self, Perm},
 };
 
 #[derive(Debug, thiserror::Error, actix_web_error::Json)]
@@ -42,14 +42,26 @@ impl Caller {
         if !secret.starts_with("upl_") {
             return Err(AuthError::BadAuth);
         }
-        let keys = KEYS.read().unwrap_or_else(|e| e.into_inner());
-        keys.resolve(secret)
+        tokens::keys()
+            .resolve(secret)
             .map(|(name, perms)| Caller::Scoped { name, perms })
             .ok_or(AuthError::BadAuth)
     }
 
     pub fn is_admin(&self) -> bool {
         matches!(self, Caller::Admin)
+    }
+
+    /// Whether this caller may store a file with this extension (`sniffed` is what the bytes
+    /// look like). The error says what the key can upload.
+    pub fn may_upload(&self, extension: &str, sniffed: &str) -> Result<(), String> {
+        match self {
+            Caller::Admin => Ok(()),
+            Caller::Scoped { perms, .. } if tokens::upload_allowed(perms, extension, sniffed) => {
+                Ok(())
+            }
+            Caller::Scoped { perms, .. } => Err(tokens::describe(perms)),
+        }
     }
 
     pub fn perms(&self) -> BTreeSet<Perm> {

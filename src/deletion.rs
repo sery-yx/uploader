@@ -11,7 +11,11 @@ use base64::{
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha224;
 
-use crate::{config::CONFIG, media, templates};
+use crate::{
+    config::CONFIG,
+    media,
+    templates::{self, DeleteState},
+};
 
 type HmacSha224 = Hmac<Sha224>;
 
@@ -71,17 +75,23 @@ pub enum DeletionError {
     Io(io::Error),
 }
 
+/// Whether this name and key are a genuine deletion link. Both the page and the delete
+/// request go through here.
+fn verified(filename: &str, key: &str) -> bool {
+    media::is_valid_stored_name(filename) && check_key(filename, key)
+}
+
 #[delete("/d/{filename}/{key}")]
 pub async fn delete_file(path: web::Path<(String, String)>) -> Result<HttpResponse, DeletionError> {
     let (filename, key) = path.into_inner();
-    if !media::is_valid_stored_name(&filename) || !check_key(&filename, &key) {
+    if !verified(&filename, &key) {
         return Err(DeletionError::InvalidKey);
     }
     match tokio::fs::remove_file(CONFIG.file_dir.join(&filename)).await {
         Ok(()) => Ok(HttpResponse::NoContent().finish()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Err(DeletionError::NotFound),
         Err(e) => {
-            tracing::warn!(error = %e, file = %filename, "Couldn't delete");
+            tracing::warn!(error = %e, "Couldn't delete a file");
             Err(DeletionError::Io(e))
         }
     }
@@ -90,12 +100,17 @@ pub async fn delete_file(path: web::Path<(String, String)>) -> Result<HttpRespon
 #[get("/d/{filename}/{key}")]
 pub async fn delete_page(path: web::Path<(String, String)>) -> HttpResponse {
     let (filename, key) = path.into_inner();
-    let valid = media::is_valid_stored_name(&filename) && check_key(&filename, &key);
-    let exists = valid
-        && tokio::fs::metadata(CONFIG.file_dir.join(&filename))
-            .await
-            .is_ok_and(|m| m.is_file());
-    templates::delete_page(&filename, valid, exists)
+    let state = if !verified(&filename, &key) {
+        DeleteState::Invalid
+    } else if tokio::fs::metadata(CONFIG.file_dir.join(&filename))
+        .await
+        .is_ok_and(|m| m.is_file())
+    {
+        DeleteState::Ready
+    } else {
+        DeleteState::Gone
+    };
+    templates::delete_page(&filename, state)
 }
 
 #[cfg(test)]

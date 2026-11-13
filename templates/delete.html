@@ -7,15 +7,16 @@
 {%- endblock %}
 {% block main %}
 <section class="task" id="delete" aria-labelledby="delete-title">
-  {%- if !valid %}
+  {%- match state %}
+  {%- when DeleteState::Invalid %}
   <div class="state bad">{% call m::i("circle-alert") %}{% endcall %}<h1 id="delete-title">This deletion link isn’t valid</h1></div>
   <p class="sub">Check that you copied the whole link.</p>
   <div class="task-actions"><a class="btn secondary" href="/">Go to upload</a></div>
-  {%- else if !exists %}
+  {%- when DeleteState::Gone %}
   <div class="state">{% call m::i("circle-check") %}{% endcall %}<h1 id="delete-title">This file is already gone</h1></div>
   <p class="file-ref">{{ name }}</p>
   <div class="task-actions"><a class="btn secondary" href="/">Go to upload</a></div>
-  {%- else %}
+  {%- when DeleteState::Ready %}
   <div data-step="ask">
     <h1 id="delete-title">Delete this file?</h1>
   </div>
@@ -25,10 +26,10 @@
     <a class="btn secondary" href="/{{ name }}">Keep file</a>
     <button type="button" class="btn danger" id="confirm-delete">{% call m::i("trash") %}{% endcall %}Delete file</button>
   </div>
-  <div class="state ok" data-step="done" hidden tabindex="-1" id="deleted">{% call m::i("circle-check") %}{% endcall %}<h2>File deleted</h2></div>
+  <div class="state ok" data-step="done" hidden tabindex="-1" id="deleted">{% call m::i("circle-check") %}{% endcall %}<h1 id="deleted-title">File deleted</h1></div>
   <p class="file-ref" data-step="done" hidden>{{ name }}</p>
   <div class="task-actions" data-step="done" hidden><a class="btn secondary" href="/">Go to upload</a></div>
   <noscript><p class="hint">Deleting needs JavaScript.</p></noscript>
-  {%- endif %}
+  {%- endmatch %}
 </section>
 {% endblock %}

@@ -4,7 +4,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use actix_web::{error::PayloadError, http::header::ContentType, web, HttpRequest, HttpResponse};
+use actix_web::{
+    error::PayloadError,
+    http::header::{ContentType, CONTENT_LENGTH},
+    web, HttpRequest, HttpResponse,
+};
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use serde::Serialize;
@@ -16,11 +20,14 @@ use crate::{
     config::CONFIG,
     deletion,
     media::{self, Kind},
-    rng, tokens,
+    rng,
 };
 
 /// Sent by the home page with a raw `POST`, percent-encoded so any file name fits in a header.
 const FILENAME_POST_HEADER: &str = "X-Upload-Filename";
+
+/// What a multipart body may add on top of the file: boundaries and part headers.
+const MULTIPART_OVERHEAD: u64 = 64 * 1024;
 
 /// How much of the start of a file we look at to guess its type.
 const SNIFF_LEN: usize = 512;
@@ -33,7 +40,8 @@ pub enum UploadError {
     #[error("Couldn't read the form: {0}")]
     #[status(400)]
     Multipart(multer::Error),
-    #[error("The file is larger than the {0} MiB limit")]
+    /// Carries the limit in bytes that the upload was checked against.
+    #[error("The file is larger than the {} MiB limit", .0 / (1024 * 1024))]
     #[status(413)]
     TooLarge(u64),
     #[error("The upload was interrupted: {0}")]
@@ -59,7 +67,10 @@ pub async fn upload_multipart(
     caller: Caller,
     body: web::Payload,
     ct: web::Header<ContentType>,
+    req: HttpRequest,
 ) -> Result<HttpResponse, UploadError> {
+    let limit = CONFIG.max_upload_bytes();
+    check_declared(&req, limit.saturating_add(MULTIPART_OVERHEAD), limit)?;
     let boundary = multer::parse_boundary(ct.as_ref()).map_err(UploadError::Multipart)?;
     let mut form = multer::Multipart::new(SendPayload(body), boundary);
     // The first field is the file (ShareX and Chatterino both send exactly one).
@@ -69,13 +80,23 @@ pub async fn upload_multipart(
         .map_err(UploadError::Multipart)?
         .ok_or(UploadError::Empty)?;
     let filename = field.file_name().map(str::to_owned);
-    let result = store(&caller, &mut field, filename.as_deref()).await;
+    // One budget for everything we read and throw away after a refusal.
+    let mut spare = limit;
+    let result = store(&caller, &mut field, filename.as_deref(), &mut spare).await;
     if matches!(result, Err(UploadError::NotAllowed(_))) {
         // Read the rest of the form (the closing boundary, any extra fields) so the client
         // gets the 403 instead of a reset connection.
         drop(field);
-        while let Ok(Some(mut extra)) = form.next_field().await {
-            while let Ok(Some(_)) = extra.chunk().await {}
+        'extras: while spare > 0 {
+            let Ok(Some(mut extra)) = form.next_field().await else {
+                break;
+            };
+            while let Ok(Some(chunk)) = extra.chunk().await {
+                spare = spare.saturating_sub(chunk.len() as u64);
+                if spare == 0 {
+                    break 'extras;
+                }
+            }
         }
     }
     result
@@ -86,18 +107,22 @@ pub async fn upload_post(
     mut body: web::Payload,
     req: HttpRequest,
 ) -> Result<HttpResponse, UploadError> {
+    let limit = CONFIG.max_upload_bytes();
+    check_declared(&req, limit, limit)?;
     let filename = req
         .headers()
         .get(FILENAME_POST_HEADER)
         .and_then(|h| h.to_str().ok())
         .map(str::to_owned);
-    store(&caller, &mut body, filename.as_deref()).await
+    let mut spare = limit;
+    store(&caller, &mut body, filename.as_deref(), &mut spare).await
 }
 
 async fn store<S, E>(
     caller: &Caller,
     stream: &mut S,
     upload_name: Option<&str>,
+    spare: &mut u64,
 ) -> Result<HttpResponse, UploadError>
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
@@ -109,17 +134,16 @@ where
         return Err(UploadError::Empty);
     }
     check_size(head.len() as u64, limit)?;
+    *spare = spare.saturating_sub(head.len() as u64);
 
     // A name the uploader gave wins (".jpeg" stays ".jpeg"); otherwise look at the bytes.
     let sniffed = sniff_extension(&head);
     let extension = upload_name
         .and_then(media::extension_of)
         .unwrap_or_else(|| sniffed.to_owned());
-    if let Caller::Scoped { perms, .. } = caller {
-        if !tokens::upload_allowed(perms, &extension, sniffed) {
-            drain(stream, limit.saturating_sub(head.len() as u64)).await;
-            return Err(UploadError::NotAllowed(tokens::describe(perms)));
-        }
+    if let Err(allowed) = caller.may_upload(&extension, sniffed) {
+        drain(stream, spare).await;
+        return Err(UploadError::NotAllowed(allowed));
     }
     // The file is written under a dot-name (never served: `is_valid_stored_name` refuses it) and
     // renamed into place only once it's complete. The guard removes it on every other exit,
@@ -165,18 +189,18 @@ where
     }))
 }
 
-/// Reads and discards the rest of a refused upload (up to `budget` bytes), so the client is
-/// done sending and actually sees the error instead of a reset connection.
-async fn drain<S, E>(stream: &mut S, budget: u64)
+/// Reads and discards the rest of a refused upload while `budget` lasts (and takes what it
+/// reads off it), so the client is done sending and actually sees the error instead of a reset
+/// connection.
+async fn drain<S, E>(stream: &mut S, budget: &mut u64)
 where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
 {
-    let mut seen = 0u64;
-    while let Some(Ok(chunk)) = stream.next().await {
-        seen += chunk.len() as u64;
-        if seen > budget {
+    while *budget > 0 {
+        let Some(Ok(chunk)) = stream.next().await else {
             break;
-        }
+        };
+        *budget = budget.saturating_sub(chunk.len() as u64);
     }
 }
 
@@ -227,9 +251,29 @@ impl Drop for PartialFile {
 
 fn check_size(total: u64, limit: u64) -> Result<(), UploadError> {
     if total > limit {
-        Err(UploadError::TooLarge(CONFIG.max_upload_mib))
+        Err(UploadError::TooLarge(limit))
     } else {
         Ok(())
+    }
+}
+
+/// The size the client says the body will be, if it sent a usable `Content-Length`.
+fn declared_length(req: &HttpRequest) -> Option<u64> {
+    req.headers()
+        .get(CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Refuses a body that says it's too big before we read any of it. `allowed` is the most the
+/// body may be; `limit` is the file limit shown in the error.
+fn check_declared(req: &HttpRequest, allowed: u64, limit: u64) -> Result<(), UploadError> {
+    match declared_length(req) {
+        Some(len) if len > allowed => Err(UploadError::TooLarge(limit)),
+        _ => Ok(()),
     }
 }
 
@@ -297,6 +341,40 @@ impl Stream for SendPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn too_large_names_the_limit_it_was_checked_against() {
+        assert!(check_size(10, 10).is_ok());
+        let err = check_size(3 * 1024 * 1024 + 1, 3 * 1024 * 1024).unwrap_err();
+        assert_eq!(err.to_string(), "The file is larger than the 3 MiB limit");
+    }
+
+    #[test]
+    fn content_length_is_checked_early() {
+        let req = |len: &str| {
+            actix_web::test::TestRequest::default()
+                .insert_header((CONTENT_LENGTH, len))
+                .to_http_request()
+        };
+        let mib = 1024 * 1024;
+        assert!(check_declared(&req("1048576"), mib, mib).is_ok());
+        assert!(check_declared(&req("1048577"), mib, mib).is_err());
+        assert!(check_declared(&req("1048577"), mib + MULTIPART_OVERHEAD, mib).is_ok());
+        let none = actix_web::test::TestRequest::default().to_http_request();
+        assert!(check_declared(&none, mib, mib).is_ok());
+    }
+
+    #[tokio::test]
+    async fn drain_stops_when_the_budget_is_used() {
+        let chunks: Vec<Result<Bytes, io::Error>> = (0..10)
+            .map(|_| Ok(Bytes::from_static(b"0123456789")))
+            .collect();
+        let mut stream = futures::stream::iter(chunks);
+        let mut budget = 25;
+        drain(&mut stream, &mut budget).await;
+        assert_eq!(budget, 0);
+        assert_eq!(stream.count().await, 7);
+    }
 
     #[test]
     fn sniffs_common_media() {

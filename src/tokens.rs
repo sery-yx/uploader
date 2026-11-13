@@ -5,9 +5,9 @@
 
 use std::{
     collections::BTreeSet,
-    io,
+    io::{self, Write},
     path::PathBuf,
-    sync::{LazyLock, RwLock},
+    sync::{LazyLock, RwLock, RwLockReadGuard, RwLockWriteGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -57,6 +57,30 @@ impl Perm {
         }
     }
 
+    /// Name of one such file, for the viewer's chip and the picked-file row: "Picture", "GIF".
+    pub fn singular(self) -> &'static str {
+        match self {
+            Perm::Image => "Picture",
+            Perm::Gif => "GIF",
+            Perm::Video => "Video",
+            Perm::Audio => "Audio",
+            Perm::Text => "Text",
+            Perm::File => "File",
+        }
+    }
+
+    /// Checkbox label on the Keys page: "Pictures", "Other files".
+    pub fn label(self) -> &'static str {
+        match self {
+            Perm::Image => "Pictures",
+            Perm::Gif => "GIFs",
+            Perm::Video => "Video",
+            Perm::Audio => "Audio",
+            Perm::Text => "Text",
+            Perm::File => "Other files",
+        }
+    }
+
     /// Plural noun for messages: "This key can only upload pictures and GIFs."
     pub fn plural(self) -> &'static str {
         match self {
@@ -68,6 +92,29 @@ impl Perm {
             Perm::File => "other files",
         }
     }
+}
+
+/// The permission table the pages use, so the browser classifies files exactly like the server:
+/// every permission with its words, and the permission of each common extension.
+pub fn client_table() -> serde_json::Value {
+    let perms: Vec<_> = Perm::ALL
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p, "label": p.label(), "one": p.singular(), "noun": p.plural(),
+            })
+        })
+        .collect();
+    let exts: serde_json::Map<_, _> = media::COMMON_EXTENSIONS
+        .iter()
+        .map(|ext| {
+            (
+                (*ext).to_owned(),
+                serde_json::json!(Perm::for_extension(ext)),
+            )
+        })
+        .collect();
+    serde_json::json!({ "perms": perms, "exts": exts })
 }
 
 /// "pictures", "pictures and GIFs", "pictures, GIFs and videos"
@@ -131,8 +178,19 @@ pub struct KeyStore {
     entries: Vec<KeyEntry>,
 }
 
-pub static KEYS: LazyLock<RwLock<KeyStore>> =
+static KEYS: LazyLock<RwLock<KeyStore>> =
     LazyLock::new(|| RwLock::new(KeyStore::load(CONFIG.keys_file.clone())));
+
+/// The key list for reading. A panic while holding the lock can't leave the list half-changed
+/// (changes are rolled back on failure), so a poisoned lock is still safe to use.
+pub fn keys() -> RwLockReadGuard<'static, KeyStore> {
+    KEYS.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The key list for changing, with the same poison recovery as [`keys`].
+pub fn keys_mut() -> RwLockWriteGuard<'static, KeyStore> {
+    KEYS.write().unwrap_or_else(|e| e.into_inner())
+}
 
 /// A fresh key: `upl_` and 32 random bytes in URL-safe base64.
 fn new_secret() -> String {
@@ -202,7 +260,10 @@ impl KeyStore {
     fn save(&self) -> io::Result<()> {
         let json = serde_json::to_string_pretty(&self.entries).map_err(io::Error::other)?;
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
         std::fs::rename(&tmp, &self.path)
     }
 
@@ -361,6 +422,35 @@ mod tests {
         assert!(upload_allowed(&video, "mp4", "mp4"));
         assert!(upload_allowed(&video, "mov", "mov"));
         assert!(!upload_allowed(&video, "txt", "txt"));
+    }
+
+    #[test]
+    fn client_table_matches_the_server() {
+        let table = client_table();
+        let exts = table["exts"].as_object().unwrap();
+        // Formats browsers leave untyped still get the right permission.
+        assert_eq!(exts["mkv"], "video");
+        assert_eq!(exts["mov"], "video");
+        assert_eq!(exts["flac"], "audio");
+        assert_eq!(exts["opus"], "audio");
+        assert_eq!(exts["gif"], "gif");
+        assert_eq!(exts["png"], "image");
+        assert_eq!(exts["svg"], "image");
+        assert_eq!(exts["ts"], "text");
+        assert_eq!(exts["rs"], "text");
+        assert_eq!(exts["html"], "text");
+        for ext in media::COMMON_EXTENSIONS {
+            assert_eq!(
+                exts[*ext],
+                serde_json::json!(Perm::for_extension(ext)),
+                "{ext}"
+            );
+        }
+        let perms = table["perms"].as_array().unwrap();
+        assert_eq!(perms.len(), Perm::ALL.len());
+        assert_eq!(perms[1]["id"], "gif");
+        assert_eq!(perms[1]["one"], "GIF");
+        assert_eq!(perms[5]["label"], "Other files");
     }
 
     #[test]

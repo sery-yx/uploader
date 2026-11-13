@@ -125,6 +125,22 @@ pub fn is_valid_stored_name(name: &str) -> bool {
         && !name.contains("..")
 }
 
+/// Extensions the upload page should classify without guessing. Browsers report no type for
+/// several of these (mkv, flac, opus, most code), so the page can't rely on `File.type`.
+pub const COMMON_EXTENSIONS: &[&str] = &[
+    // pictures
+    "png", "jpg", "jpeg", "jfif", "gif", "webp", "avif", "apng", "bmp", "ico", "svg", "tif", "tiff",
+    "heic", "heif", "jxl", // video
+    "mp4", "m4v", "webm", "mkv", "mov", "avi", "ogv", "mpg", "mpeg", "wmv", "3gp",
+    // audio
+    "mp3", "m4a", "aac", "ogg", "oga", "opus", "flac", "wav", "weba", "wma", "mid", "midi",
+    // text and code
+    "txt", "text", "md", "log", "csv", "tsv", "json", "xml", "yaml", "yml", "toml", "ini", "cfg",
+    "conf", "env", "html", "css", "js", "mjs", "cjs", "rs", "py", "go", "c", "h", "cpp", "hpp",
+    "cs", "java", "kt", "ts", "tsx", "jsx", "svelte", "vue", "lua", "rb", "php", "ps1", "bat",
+    "zig", "sh", "sql",
+];
+
 pub fn is_svg(ext: &str) -> bool {
     ext.eq_ignore_ascii_case("svg")
 }

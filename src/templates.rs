@@ -14,6 +14,7 @@ use askama::Template;
 use crate::{
     config::CONFIG,
     media::{self, Kind},
+    tokens,
 };
 
 /// Pages only load our own scripts and styles, and only talk to our own origin.
@@ -27,6 +28,8 @@ const PAGE_CSP: &str = "default-src 'self'; img-src 'self' data: blob:; media-sr
 struct HomeTemplate {
     max_upload: String,
     max_upload_bytes: u64,
+    /// JSON for the page's scripts, see [`tokens::client_table`].
+    kinds: String,
 }
 
 #[derive(Template)]
@@ -52,13 +55,35 @@ struct ViewTemplate<'a> {
 #[template(path = "delete.html")]
 struct DeleteTemplate<'a> {
     name: &'a str,
-    valid: bool,
-    exists: bool,
+    state: DeleteState,
+}
+
+/// What a deletion link points at right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeleteState {
+    /// The name or key doesn't check out.
+    Invalid,
+    /// The link is genuine but the file is already gone.
+    Gone,
+    /// The link is genuine and the file is there.
+    Ready,
+}
+
+impl DeleteState {
+    pub fn status(self) -> StatusCode {
+        match self {
+            DeleteState::Invalid => StatusCode::UNAUTHORIZED,
+            DeleteState::Gone => StatusCode::NOT_FOUND,
+            DeleteState::Ready => StatusCode::OK,
+        }
+    }
 }
 
 #[derive(Template)]
 #[template(path = "admin.html")]
-struct AdminTemplate;
+struct AdminTemplate {
+    kinds: String,
+}
 
 #[derive(Template)]
 #[template(path = "404.html")]
@@ -86,6 +111,7 @@ pub async fn home() -> HttpResponse {
         &HomeTemplate {
             max_upload: format!("{} MB", media::group_thousands(CONFIG.max_upload_mib)),
             max_upload_bytes: CONFIG.max_upload_bytes(),
+            kinds: tokens::client_table().to_string(),
         },
         StatusCode::OK,
     )
@@ -93,7 +119,12 @@ pub async fn home() -> HttpResponse {
 
 #[route("/admin", method = "GET", method = "HEAD")]
 pub async fn admin_page() -> HttpResponse {
-    render(&AdminTemplate, StatusCode::OK)
+    render(
+        &AdminTemplate {
+            kinds: tokens::client_table().to_string(),
+        },
+        StatusCode::OK,
+    )
 }
 
 pub fn viewer(name: &str, meta: &Metadata) -> HttpResponse {
@@ -104,7 +135,7 @@ pub fn viewer(name: &str, meta: &Metadata) -> HttpResponse {
     let template = ViewTemplate {
         name,
         kind: kind.as_str(),
-        kind_label: kind_label(kind, ext),
+        kind_label: tokens::Perm::for_extension(ext).singular(),
         ext,
         mime: mime.essence_str().to_owned(),
         size: media::format_size(meta.len()),
@@ -120,33 +151,22 @@ pub fn viewer(name: &str, meta: &Metadata) -> HttpResponse {
     res
 }
 
-fn kind_label(kind: Kind, ext: &str) -> &'static str {
-    match kind {
-        Kind::Image if ext.eq_ignore_ascii_case("gif") => "GIF",
-        Kind::Image => "Picture",
-        Kind::Video => "Video",
-        Kind::Audio => "Audio",
-        Kind::Text => "Text",
-        Kind::Other => "File",
-    }
-}
-
-pub fn delete_page(name: &str, valid: bool, exists: bool) -> HttpResponse {
-    let status = match (valid, exists) {
-        (false, _) => StatusCode::UNAUTHORIZED,
-        (true, false) => StatusCode::NOT_FOUND,
-        (true, true) => StatusCode::OK,
-    };
-    render(
-        &DeleteTemplate {
-            name,
-            valid,
-            exists,
-        },
-        status,
-    )
+pub fn delete_page(name: &str, state: DeleteState) -> HttpResponse {
+    render(&DeleteTemplate { name, state }, state.status())
 }
 
 pub fn not_found() -> HttpResponse {
     render(&NotFoundTemplate, StatusCode::NOT_FOUND)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_state_maps_to_status() {
+        assert_eq!(DeleteState::Invalid.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(DeleteState::Gone.status(), StatusCode::NOT_FOUND);
+        assert_eq!(DeleteState::Ready.status(), StatusCode::OK);
+    }
 }

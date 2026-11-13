@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::{Admin, Caller},
-    tokens::{KeyInfo, Perm, StoreError, KEYS},
+    tokens::{self, KeyInfo, Perm, StoreError},
 };
 
 #[derive(Debug, thiserror::Error, actix_web_error::Json)]
@@ -73,13 +73,9 @@ struct NewKey {
     key: KeyInfo,
 }
 
-fn keys_write() -> std::sync::RwLockWriteGuard<'static, crate::tokens::KeyStore> {
-    KEYS.write().unwrap_or_else(|e| e.into_inner())
-}
-
 #[get("/api/keys")]
 pub async fn list(_: Admin) -> HttpResponse {
-    let keys = KEYS.read().unwrap_or_else(|e| e.into_inner()).list();
+    let keys = tokens::keys().list();
     HttpResponse::Ok()
         .insert_header(("Cache-Control", "no-store"))
         .json(keys)
@@ -87,7 +83,7 @@ pub async fn list(_: Admin) -> HttpResponse {
 
 #[post("/api/keys")]
 pub async fn create(_: Admin, form: web::Json<KeyForm>) -> Result<HttpResponse, AdminError> {
-    let (token, key) = keys_write().create(&form.name, form.perms.clone())?;
+    let (token, key) = tokens::keys_mut().create(&form.name, form.perms.clone())?;
     tracing::info!(id = %key.id, name = %key.name, "Created an upload key");
     Ok(HttpResponse::Created()
         .insert_header(("Cache-Control", "no-store"))
@@ -100,13 +96,13 @@ pub async fn update(
     id: web::Path<String>,
     form: web::Json<KeyForm>,
 ) -> Result<HttpResponse, AdminError> {
-    let key = keys_write().update(&id, &form.name, form.perms.clone())?;
+    let key = tokens::keys_mut().update(&id, &form.name, form.perms.clone())?;
     Ok(HttpResponse::Ok().json(key))
 }
 
 #[post("/api/keys/{id}/reset")]
 pub async fn reset(_: Admin, id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-    let (token, key) = keys_write().reset(&id)?;
+    let (token, key) = tokens::keys_mut().reset(&id)?;
     tracing::info!(id = %key.id, name = %key.name, "Reset an upload key");
     Ok(HttpResponse::Ok()
         .insert_header(("Cache-Control", "no-store"))
@@ -115,7 +111,7 @@ pub async fn reset(_: Admin, id: web::Path<String>) -> Result<HttpResponse, Admi
 
 #[delete("/api/keys/{id}")]
 pub async fn remove(_: Admin, id: web::Path<String>) -> Result<HttpResponse, AdminError> {
-    keys_write().delete(&id)?;
+    tokens::keys_mut().delete(&id)?;
     tracing::info!(id = %id, "Deleted an upload key");
     Ok(HttpResponse::NoContent().finish())
 }
