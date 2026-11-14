@@ -126,10 +126,16 @@ async fn main() -> std::io::Result<()> {
                     .route(web::post().to(upload::upload_post)),
             )
             .service(
-                Files::new("/static", "static")
-                    .use_etag(true)
-                    .use_last_modified(true)
-                    .default_handler(fn_service(not_found_svc)),
+                // `no-cache` makes browsers check the ETag on every load, so an update's CSS and
+                // JS show up at once instead of an old copy running against new pages.
+                web::scope("/static")
+                    .wrap(DefaultHeaders::new().add((header::CACHE_CONTROL, "no-cache")))
+                    .service(
+                        Files::new("", "static")
+                            .use_etag(true)
+                            .use_last_modified(true)
+                            .default_handler(fn_service(not_found_svc)),
+                    ),
             )
             .service(admin::whoami)
             .service(admin::list)
