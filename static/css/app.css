@@ -1,5 +1,5 @@
 /* cyex uploader: web-tool layer on top of tokens.css (cyex-app, web density). */
-@import url('/static/css/fonts.css');
+@import url('fonts.css');
 
 html {
   font-size: 16px;

@@ -3,7 +3,7 @@
 {% block title %}cyex uploader · Share pictures, GIFs, video and files{% endblock %}
 {% block head %}
     <meta name="description" content="A private uploader for pictures, GIFs, video, audio and text." />
-    <script type="module" src="/static/js/home.js"></script>
+    <script type="module" src="{{ crate::assets::base() }}/js/home.js"></script>
 {%- endblock %}
 {% block nav_upload %}aria-current="page"{% endblock %}
 {% block main %}

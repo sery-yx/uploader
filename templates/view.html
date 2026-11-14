@@ -19,7 +19,7 @@
     <meta property="og:type" content="music.song" />
     <meta property="og:audio" content="{{ raw_url }}" />
     {%- endif %}
-    <script type="module" src="/static/js/view.js"></script>
+    <script type="module" src="{{ crate::assets::base() }}/js/view.js"></script>
 {%- endblock %}
 {% block main %}
 <article class="view" id="view" data-kind="{{ kind }}" data-raw="{{ raw }}" data-name="{{ name }}" data-ext="{{ ext }}" data-bytes="{{ bytes }}">

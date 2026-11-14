@@ -1,4 +1,5 @@
 import {
+  ICONS,
   KEY_STORAGE,
   announce,
   confirmAction,
@@ -231,9 +232,7 @@ function renderRow(key) {
     show.setAttribute('aria-expanded', String(shown));
     setLabel(show, shown ? 'Hide key' : 'Show key');
     show.setAttribute('aria-label', `${shown ? 'Hide' : 'Show'} the key for ${key.name}`);
-    show
-      .querySelector('use')
-      .setAttribute('href', `/static/icons.svg#${shown ? 'eye-off' : 'eye'}`);
+    show.querySelector('use').setAttribute('href', `${ICONS}#${shown ? 'eye-off' : 'eye'}`);
   };
 
   show.addEventListener('click', async () => {

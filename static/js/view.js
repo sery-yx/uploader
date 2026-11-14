@@ -478,7 +478,7 @@ async function initText() {
     }
     if (highlighted) return;
     try {
-      const { default: hljs } = await import('/static/lib/highlight.min.js');
+      const { default: hljs } = await import('../lib/highlight.min.js');
       // Use the extension when it names a language; otherwise guess, but only keep a confident
       // guess, so a short note or a log doesn't come out as "CSS".
       const named = hljs.getLanguage(ext);

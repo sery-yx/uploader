@@ -1,6 +1,7 @@
 // Shared UI for every cyex uploader page: theme toggle, tooltips, toasts, copy, formats.
 
-const ICONS = '/static/icons.svg';
+// Relative to this file, so it comes from the same static version as the page.
+export const ICONS = new URL('../icons.svg', import.meta.url).pathname;
 
 /** A sprite icon as an SVG element. */
 export function icon(name) {

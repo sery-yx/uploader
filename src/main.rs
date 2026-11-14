@@ -2,7 +2,7 @@ use actix_cors::Cors;
 use actix_files::{Files, NamedFile};
 use actix_web::{
     body::MessageBody,
-    dev::{fn_service, ServiceRequest, ServiceResponse},
+    dev::{fn_service, Service, ServiceRequest, ServiceResponse},
     http,
     http::header,
     middleware::{Compress, DefaultHeaders},
@@ -18,6 +18,7 @@ use crate::{config::CONFIG, guards::MimeGuard};
 
 mod admin;
 mod args;
+mod assets;
 mod auth;
 mod clean;
 mod config;
@@ -124,6 +125,35 @@ async fn main() -> std::io::Result<()> {
                 web::resource("/upload")
                     .route(web::post().guard(MimeGuard).to(upload::upload_multipart))
                     .route(web::post().to(upload::upload_post)),
+            )
+            .service(
+                // This build's files under their version: cached for a year, since an update
+                // changes the path. An older version's path still serves today's files, but
+                // without the long cache.
+                web::scope("/static/{ver:v-[0-9a-f]{8}}")
+                    .wrap_fn(|req, srv| {
+                        let current = assets::is_current(req.match_info().get("ver").unwrap_or(""));
+                        let fut = srv.call(req);
+                        async move {
+                            let mut res = fut.await?;
+                            let cache = if current && res.status().is_success() {
+                                "public, max-age=31536000, immutable"
+                            } else {
+                                "no-cache"
+                            };
+                            res.headers_mut().insert(
+                                header::CACHE_CONTROL,
+                                header::HeaderValue::from_static(cache),
+                            );
+                            Ok(res)
+                        }
+                    })
+                    .service(
+                        Files::new("", "static")
+                            .use_etag(true)
+                            .use_last_modified(true)
+                            .default_handler(fn_service(not_found_svc)),
+                    ),
             )
             .service(
                 // `no-cache` makes browsers check the ETag on every load, so an update's CSS and
