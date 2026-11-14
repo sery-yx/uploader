@@ -27,7 +27,7 @@ Only people with the upload key can upload; anyone with a link can open it.
    domain = "https://i.example.com"   # public origin, no trailing slash
    authorization = "Bearer <token>"   # the admin key: long and random (`openssl rand -base64 32`)
    secret = "..."                     # `openssl rand -base64 28`, signs deletion links
-   max_upload_mib = 256               # optional, default 256
+   max_upload_mib = 5120              # optional, default 5120 (5 GB)
    ```
 
 2. `cargo run -r` (run it from the repository root, it serves `static/`).
@@ -46,19 +46,21 @@ The `authorization` value in `config.toml` is the **admin key**: it can upload a
 manage other keys. Signed in with it, open **Keys** (`/admin`) to:
 
 - **Create** a key limited to any mix of pictures, GIFs, video, audio, text and other files
-  (pictures don't include GIFs, so a key can be GIF-only). The key is shown once, with a
-  ready-made ShareX config to download.
+  (pictures don't include GIFs, so a key can be GIF-only). It comes with a ready-made ShareX
+  config to download.
+- **Show** a key again later to copy it or download its ShareX config. Older keys were
+  stored only as a hash; reset one once to make it showable.
 - **Edit** a key's name or what it may upload.
 - **Reset** a key: it gets a new value and the old one stops working at once.
 - **Delete** a key. Files uploaded with it stay online.
 
 A scoped key is checked against both the file's name and its contents, so a video renamed to
-`.gif` is refused by a GIF-only key (`403 This key can only upload GIFs`). Keys are stored hashed
-(SHA-256) in `keys_file` (default `keys.json`); scoped keys look like `upl_…` and work with or
-without a `Bearer ` prefix.
+`.gif` is refused by a GIF-only key (`403 This key can only upload GIFs`). Keys are kept in `keys_file`
+(default `keys.json`), so treat that file like `config.toml`. Scoped keys look like `upl_…` and
+work with or without a `Bearer ` prefix.
 
 API (admin key in `Authorization`): `GET /api/keys`, `POST /api/keys {name, perms}`,
-`PUT /api/keys/{id} {name, perms}`, `POST /api/keys/{id}/reset`, `DELETE /api/keys/{id}`.
+`GET /api/keys/{id}/secret`, `PUT /api/keys/{id} {name, perms}`, `POST /api/keys/{id}/reset`, `DELETE /api/keys/{id}`.
 `perms` is a list of `image`, `gif`, `video`, `audio`, `text`, `file`. Any key can call
 `GET /api/key` to see what it may upload.
 
@@ -72,7 +74,9 @@ with an `X-Upload-Filename` header (percent-encoded); only its extension is used
 
 ### ShareX
 
-Use the following ShareX config and replace `{config.domain}` and `{config.authorization}` with the respective values from your [`config.toml`](#running-it):
+Scoped keys work the same way as the admin key: put the key in the `Authorization` header. The
+Keys page downloads a ready-made `.sxcu` for any key. To write one by hand, use the following
+config and replace `{config.domain}` and `{config.authorization}` with your domain and the key:
 
 ```json
 {

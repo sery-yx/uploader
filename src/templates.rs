@@ -109,7 +109,7 @@ fn render(template: &impl Template, status: StatusCode) -> HttpResponse {
 pub async fn home() -> HttpResponse {
     render(
         &HomeTemplate {
-            max_upload: format!("{} MB", media::group_thousands(CONFIG.max_upload_mib)),
+            max_upload: media::format_size(CONFIG.max_upload_bytes()),
             max_upload_bytes: CONFIG.max_upload_bytes(),
             kinds: tokens::client_table().to_string(),
         },

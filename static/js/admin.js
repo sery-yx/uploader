@@ -1,6 +1,7 @@
 import {
   KEY_STORAGE,
   announce,
+  confirmAction,
   copy,
   el,
   errorMessage,
@@ -31,7 +32,10 @@ async function api(method, path, body) {
   return res.status === 204 ? null : res.json();
 }
 
-/** A row of permission checkboxes; returns a getter for the ticked ones. */
+/**
+ * A row of permission checkboxes, ending in a "Select all" / "Clear all" switch; returns a
+ * getter for the ticked ones.
+ */
 function permChecks(container, ticked = []) {
   container.replaceChildren();
   const inputs = PERMS.map(id => {
@@ -44,6 +48,20 @@ function permChecks(container, ticked = []) {
     container.append(label);
     return input;
   });
+  const all = el('button', 'btn link small check-all');
+  all.type = 'button';
+  const sync = () => {
+    all.textContent = inputs.every(i => i.checked) ? 'Clear all' : 'Select all';
+  };
+  all.addEventListener('click', () => {
+    const on = !inputs.every(i => i.checked);
+    for (const i of inputs) i.checked = on;
+    sync();
+    announce(on ? 'All kinds selected' : 'All kinds cleared');
+  });
+  container.addEventListener('change', sync);
+  container.append(all);
+  sync();
   return () => inputs.filter(i => i.checked).map(i => i.value);
 }
 
@@ -70,16 +88,15 @@ $('secret-copy').addEventListener('click', e => copy($('secret-value').value, e.
 $('secret-value').addEventListener('focus', e => e.target.select());
 $('secret-done').addEventListener('click', () => hideSecret({ focus: true }));
 
-// A .sxcu file ShareX imports with a double-click.
-$('sharex').addEventListener('click', () => {
-  if (!lastSecret) return;
+/** Downloads a .sxcu file that ShareX imports with a double-click. */
+function downloadSharex(token, key) {
   const config = {
     Version: '17.0.0',
-    Name: `uploader · ${lastSecret.key.name}`,
+    Name: `uploader · ${key.name}`,
     DestinationType: 'ImageUploader, TextUploader, FileUploader',
     RequestMethod: 'POST',
     RequestURL: `${location.origin}/upload`,
-    Headers: { Authorization: lastSecret.token },
+    Headers: { Authorization: token },
     Body: 'MultipartFormData',
     FileFormName: 'file',
     URL: '{json:link}',
@@ -90,10 +107,19 @@ $('sharex').addEventListener('click', () => {
   a.href = URL.createObjectURL(
     new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' }),
   );
-  a.download = `uploader-${lastSecret.key.name.replace(/[^\w-]+/g, '-').toLowerCase() || 'key'}.sxcu`;
+  const slug = key.name
+    .replace(/[^\w-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+  a.download = `uploader-${slug || 'key'}.sxcu`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-});
+}
+
+$('sharex').addEventListener(
+  'click',
+  () => lastSecret && downloadSharex(lastSecret.token, lastSecret.key),
+);
 
 // ---------- create ----------
 
@@ -140,44 +166,6 @@ $('create-form').addEventListener('submit', async e => {
 
 // ---------- list ----------
 
-/**
- * Destructive buttons arm on the first press ("Click again to …") and act on a second press
- * within 3 s.
- */
-function armed(button, note, row, action) {
-  let timer = 0;
-  let noteEl = null;
-  const restingName = button.getAttribute('aria-label');
-  const disarm = () => {
-    clearTimeout(timer);
-    button.classList.remove('armed');
-    button.setAttribute('aria-label', restingName);
-    noteEl?.remove();
-    noteEl = null;
-  };
-  button.addEventListener('click', async () => {
-    if (!button.classList.contains('armed')) {
-      button.classList.add('armed');
-      button.setAttribute('aria-label', note);
-      noteEl = el('span', 'armed-note', note);
-      noteEl.setAttribute('aria-hidden', 'true'); // announced below, not read twice
-      row.append(noteEl);
-      announce(note);
-      timer = setTimeout(disarm, 3000);
-      return;
-    }
-    disarm();
-    // aria-disabled keeps focus here while the request runs.
-    button.setAttribute('aria-disabled', 'true');
-    try {
-      await action();
-    } finally {
-      button.removeAttribute('aria-disabled');
-    }
-  });
-  button.addEventListener('blur', disarm);
-}
-
 function iconButton(name, label, hint) {
   const b = el('button', 'icon-btn small');
   b.type = 'button';
@@ -200,16 +188,85 @@ function renderRow(key) {
   main.append(el('span', 'hint', dates.join(' · ')));
 
   const tools = el('div', 'row-tools');
+  const show = iconButton(
+    'eye',
+    'Show key',
+    key.viewable ? null : 'Made before keys were kept. Reset it to get one you can show.',
+  );
   const edit = iconButton('pencil', 'Edit');
   const reset = iconButton('rotate', 'Reset key', 'Makes a new key. The old one stops working.');
   const del = iconButton('trash', 'Delete key', 'The key stops working. Its uploads stay online.');
+  reset.classList.add('danger-target');
+  del.classList.add('danger-target');
   // The tooltip stays short; the accessible name says which key.
+  show.setAttribute('aria-label', `Show the key for ${key.name}`);
+  show.setAttribute('aria-expanded', 'false');
   edit.setAttribute('aria-label', `Edit ${key.name}`);
   reset.setAttribute('aria-label', `Reset ${key.name}`);
   del.setAttribute('aria-label', `Delete ${key.name}`);
-  tools.append(edit, reset, del);
+  tools.append(show, edit, reset, del);
   row.dataset.id = key.id;
   row.append(main, tools);
+
+  const setShown = shown => {
+    show.setAttribute('aria-expanded', String(shown));
+    setLabel(show, shown ? 'Hide key' : 'Show key');
+    show.setAttribute('aria-label', `${shown ? 'Hide' : 'Show'} the key for ${key.name}`);
+    show
+      .querySelector('use')
+      .setAttribute('href', `/static/icons.svg#${shown ? 'eye-off' : 'eye'}`);
+  };
+
+  show.addEventListener('click', async () => {
+    if (show.getAttribute('aria-disabled') === 'true') return;
+    const open = row.querySelector('.key-reveal');
+    if (open) {
+      open.remove();
+      setShown(false);
+      return;
+    }
+    if (!key.viewable) {
+      toast('This key can’t be shown.', {
+        detail: 'It was made before keys were kept. Reset it to get one you can show again.',
+      });
+      return;
+    }
+    show.setAttribute('aria-disabled', 'true');
+    let token;
+    try {
+      ({ token } = await api('GET', `/api/keys/${key.id}/secret`));
+    } catch (err) {
+      toast('Couldn’t load the key.', { type: 'error', detail: err.message });
+      return;
+    } finally {
+      show.removeAttribute('aria-disabled');
+    }
+    if (!token || row.querySelector('.key-reveal')) return;
+    const panel = el('div', 'key-reveal');
+    const fieldRow = el('div', 'field-row');
+    const field = el('input', 'field mono');
+    field.readOnly = true;
+    field.value = token;
+    field.setAttribute('aria-label', `Key for ${key.name}`);
+    field.addEventListener('focus', () => field.select());
+    const copyBtn = el('button', 'btn secondary small');
+    copyBtn.type = 'button';
+    copyBtn.append(icon('copy'), 'Copy key');
+    copyBtn.addEventListener('click', () => copy(token, copyBtn));
+    fieldRow.append(field, copyBtn);
+    const sharex = el('button', 'btn ghost small');
+    sharex.type = 'button';
+    sharex.append(icon('download'), 'Download ShareX config');
+    sharex.addEventListener('click', () => downloadSharex(token, key));
+    const foot = el('div', 'secret-tools');
+    foot.append(sharex);
+    panel.append(fieldRow, foot);
+    const editForm = row.querySelector('.key-edit');
+    if (editForm) editForm.before(panel);
+    else row.append(panel);
+    setShown(true);
+    copyBtn.focus();
+  });
 
   edit.addEventListener('click', () => {
     if (row.querySelector('.key-edit')) return;
@@ -263,32 +320,62 @@ function renderRow(key) {
     });
   });
 
-  armed(reset, `Click again to reset ${key.name}. The old key stops working.`, row, async () => {
-    try {
-      const { token, key: fresh } = await api('POST', `/api/keys/${key.id}/reset`);
-      showSecret(token, fresh, `New key for ${fresh.name}`);
-    } catch (err) {
-      toast('Couldn’t reset the key.', { type: 'error', detail: err.message });
-      return;
-    }
-    await reload();
-  });
+  /** Asks in a bubble by the button, then runs `action` with the button busy. */
+  const confirmed = (button, ask, action) =>
+    button.addEventListener('click', async () => {
+      if (button.getAttribute('aria-disabled') === 'true') return;
+      if (!(await confirmAction(button, ask))) return;
+      // aria-disabled keeps focus here while the request runs.
+      button.setAttribute('aria-disabled', 'true');
+      try {
+        await action();
+      } finally {
+        button.removeAttribute('aria-disabled');
+      }
+    });
 
-  armed(del, `Click again to delete ${key.name}.`, row, async () => {
-    try {
-      await api('DELETE', `/api/keys/${key.id}`);
-    } catch (err) {
-      toast('Couldn’t delete the key.', { type: 'error', detail: err.message });
-      return;
-    }
-    if (lastSecret?.key.id === key.id) hideSecret();
-    toast('Key deleted.', { detail: 'Files uploaded with it stay online.' });
-    // Focus the next row's delete button (or the previous one, or the name field).
-    const rows = [...$('keys-list').children];
-    const at = rows.indexOf(row);
-    const next = rows[at + 1] ?? rows[at - 1];
-    await reload({ focusId: next?.dataset.id, focus: 'delete' });
-  });
+  confirmed(
+    reset,
+    {
+      title: `Reset the key for ${key.name}?`,
+      detail: 'It gets a new value. The old one stops working at once, in ShareX too.',
+      action: 'Reset key',
+    },
+    async () => {
+      try {
+        const { token, key: fresh } = await api('POST', `/api/keys/${key.id}/reset`);
+        showSecret(token, fresh, `New key for ${fresh.name}`);
+      } catch (err) {
+        toast('Couldn’t reset the key.', { type: 'error', detail: err.message });
+        return;
+      }
+      await reload();
+    },
+  );
+
+  confirmed(
+    del,
+    {
+      title: `Delete the key for ${key.name}?`,
+      detail: 'It stops working at once. Files uploaded with it stay online.',
+      action: 'Delete key',
+    },
+    async () => {
+      try {
+        await api('DELETE', `/api/keys/${key.id}`);
+      } catch (err) {
+        toast('Couldn’t delete the key.', { type: 'error', detail: err.message });
+        return;
+      }
+      if (lastSecret?.key.id === key.id) hideSecret();
+      toast('Key deleted.', { detail: 'Files uploaded with it stay online.' });
+      // Focus the next row's delete button (or the previous one, or the name field).
+      const rows = [...$('keys-list').children];
+      const at = rows.indexOf(row);
+      const next = rows[at + 1] ?? rows[at - 1];
+      await reload({ focusId: next?.dataset.id, focus: 'delete' });
+    },
+  );
 
   return row;
 }
@@ -319,7 +406,7 @@ async function reload({ focusId, focus } = {}) {
   }
   if (!focusId && !hadFocus) return;
   const row = focusId && $('keys-list').querySelector(`[data-id="${CSS.escape(focusId)}"]`);
-  const index = focus === 'delete' ? 2 : 0;
+  const index = { show: 0, edit: 1, delete: 3 }[focus] ?? 1;
   const target = row?.querySelectorAll('.row-tools button')[index];
   (target ?? $('new-name')).focus();
 }

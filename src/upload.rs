@@ -41,7 +41,7 @@ pub enum UploadError {
     #[status(400)]
     Multipart(multer::Error),
     /// Carries the limit in bytes that the upload was checked against.
-    #[error("The file is larger than the {} MiB limit", .0 / (1024 * 1024))]
+    #[error("The file is larger than the {} limit", crate::media::format_size(*.0))]
     #[status(413)]
     TooLarge(u64),
     #[error("The upload was interrupted: {0}")]
@@ -346,7 +346,7 @@ mod tests {
     fn too_large_names_the_limit_it_was_checked_against() {
         assert!(check_size(10, 10).is_ok());
         let err = check_size(3 * 1024 * 1024 + 1, 3 * 1024 * 1024).unwrap_err();
-        assert_eq!(err.to_string(), "The file is larger than the 3 MiB limit");
+        assert_eq!(err.to_string(), "The file is larger than the 3 MB limit");
     }
 
     #[test]

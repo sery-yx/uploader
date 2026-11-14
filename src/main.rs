@@ -134,6 +134,7 @@ async fn main() -> std::io::Result<()> {
             .service(admin::whoami)
             .service(admin::list)
             .service(admin::create)
+            .service(admin::secret)
             .service(admin::update)
             .service(admin::reset)
             .service(admin::remove)

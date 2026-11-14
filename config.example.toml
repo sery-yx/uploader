@@ -8,7 +8,7 @@ domain = "https://i.example.com"
 authorization = "Bearer <token>"
 # Base64, at least 28 bytes. Signs deletion links: `openssl rand -base64 28`
 secret = "..."
-# Largest accepted upload in MiB (default 256).
-max_upload_mib = 256
+# Largest accepted upload in MiB (default 5120, which is 5 GB).
+max_upload_mib = 5120
 # Where scoped upload keys are kept, hashed (default keys.json). Manage them at /admin.
 keys_file = "keys.json"

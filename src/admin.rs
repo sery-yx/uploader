@@ -81,6 +81,22 @@ pub async fn list(_: Admin) -> HttpResponse {
         .json(keys)
 }
 
+#[derive(Serialize)]
+struct ShownKey {
+    /// `None` for a key made before keys were kept; resetting it makes one that can be shown.
+    token: Option<String>,
+    key: KeyInfo,
+}
+
+/// The key itself, so the admin can copy it again without resetting it.
+#[get("/api/keys/{id}/secret")]
+pub async fn secret(_: Admin, id: web::Path<String>) -> Result<HttpResponse, AdminError> {
+    let (token, key) = tokens::keys().secret(&id)?;
+    Ok(HttpResponse::Ok()
+        .insert_header(("Cache-Control", "no-store"))
+        .json(ShownKey { token, key }))
+}
+
 #[post("/api/keys")]
 pub async fn create(_: Admin, form: web::Json<KeyForm>) -> Result<HttpResponse, AdminError> {
     let (token, key) = tokens::keys_mut().create(&form.name, form.perms.clone())?;

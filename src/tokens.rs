@@ -1,7 +1,9 @@
 //! Upload keys the admin hands out, each limited to some kinds of files.
 //!
-//! Only a SHA-256 hash of each key is stored; the key itself is shown once, when it's created or
-//! reset. The store is a small JSON file, kept in memory and rewritten on every change.
+//! Keys are looked up by their SHA-256 hash. The key itself is kept too, so the admin can look it
+//! up again later; the file is as sensitive as `config.toml` and is written owner-only on Unix.
+//! Keys made before that was kept have only the hash and can't be shown until they're reset.
+//! The store is a small JSON file, kept in memory and rewritten on every change.
 
 use std::{
     collections::BTreeSet,
@@ -133,6 +135,9 @@ pub struct KeyEntry {
     pub name: String,
     /// Hex SHA-256 of the key.
     hash: String,
+    /// The key itself, so the admin can see it again. Missing on keys made before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret: Option<String>,
     pub perms: BTreeSet<Perm>,
     /// Unix seconds.
     pub created: u64,
@@ -149,6 +154,8 @@ pub struct KeyInfo {
     pub perms: BTreeSet<Perm>,
     pub created: u64,
     pub reset: Option<u64>,
+    /// Whether the admin can look the key up again (keys from before that was possible can't).
+    pub viewable: bool,
 }
 
 impl From<&KeyEntry> for KeyInfo {
@@ -159,6 +166,7 @@ impl From<&KeyEntry> for KeyInfo {
             perms: e.perms.clone(),
             created: e.created,
             reset: e.reset,
+            viewable: e.secret.is_some(),
         }
     }
 }
@@ -260,7 +268,11 @@ impl KeyStore {
     fn save(&self) -> io::Result<()> {
         let json = serde_json::to_string_pretty(&self.entries).map_err(io::Error::other)?;
         let tmp = self.path.with_extension("json.tmp");
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&tmp)?;
         file.write_all(json.as_bytes())?;
         file.sync_all()?;
         drop(file);
@@ -285,6 +297,16 @@ impl KeyStore {
         self.entries.iter().map(KeyInfo::from).collect()
     }
 
+    /// The key itself, for the admin. `None` for a key made before keys were kept.
+    pub fn secret(&self, id: &str) -> Result<(Option<String>, KeyInfo), StoreError> {
+        let e = self
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or(StoreError::NotFound)?;
+        Ok((e.secret.clone(), KeyInfo::from(e)))
+    }
+
     /// The permissions of a key, if it exists.
     pub fn resolve(&self, secret: &str) -> Option<(String, BTreeSet<Perm>)> {
         let h = hash(secret);
@@ -306,6 +328,7 @@ impl KeyStore {
             id: new_id(),
             name,
             hash: hash(&secret),
+            secret: Some(secret.clone()),
             perms,
             created: now(),
             reset: None,
@@ -341,12 +364,14 @@ impl KeyStore {
     pub fn reset(&mut self, id: &str) -> Result<(String, KeyInfo), StoreError> {
         let secret = new_secret();
         let h = hash(&secret);
+        let kept = secret.clone();
         let info = self.commit(|entries| {
             let e = entries
                 .iter_mut()
                 .find(|e| e.id == id)
                 .ok_or(StoreError::NotFound)?;
             e.hash = h;
+            e.secret = Some(kept);
             e.reset = Some(now());
             Ok(KeyInfo::from(&*e))
         })?;
@@ -454,6 +479,17 @@ mod tests {
     }
 
     #[test]
+    fn old_keys_load_without_a_secret() {
+        let old = r#"[{"id":"ab","name":"Old","hash":"00","perms":["gif"],"created":1}]"#;
+        let store = KeyStore {
+            path: PathBuf::new(),
+            entries: serde_json::from_str(old).unwrap(),
+        };
+        assert!(!store.list()[0].viewable);
+        assert_eq!(store.secret("ab").unwrap().0, None);
+    }
+
+    #[test]
     fn describes_perms() {
         assert_eq!(describe(&set(&[Perm::Gif])), "GIFs");
         assert_eq!(
@@ -480,8 +516,9 @@ mod tests {
         assert!(secret.starts_with("upl_"));
         assert_eq!(store.resolve(&secret).unwrap().1, set(&[Perm::Image]));
         assert!(store.resolve("upl_wrong").is_none());
-        // The secret itself is never written down.
-        assert!(!std::fs::read_to_string(&path).unwrap().contains(&secret));
+        // The admin can look the key up again.
+        assert_eq!(store.secret(&info.id).unwrap().0.as_deref(), Some(&*secret));
+        assert!(info.viewable);
 
         let (fresh, _) = store.reset(&info.id).unwrap();
         assert!(store.resolve(&secret).is_none());
@@ -492,6 +529,10 @@ mod tests {
             .unwrap();
         let reloaded = KeyStore::load(path.clone());
         assert_eq!(reloaded.list()[0].name, "Phone 2");
+        assert_eq!(
+            reloaded.secret(&info.id).unwrap().0.as_deref(),
+            Some(&*fresh)
+        );
         assert_eq!(reloaded.resolve(&fresh).unwrap().1, set(&[Perm::Gif]));
 
         assert!(matches!(
@@ -504,6 +545,7 @@ mod tests {
         ));
         store.delete(&info.id).unwrap();
         assert!(matches!(store.delete(&info.id), Err(StoreError::NotFound)));
+        assert!(matches!(store.secret(&info.id), Err(StoreError::NotFound)));
         assert!(store.resolve(&fresh).is_none());
         std::fs::remove_dir_all(dir).ok();
     }

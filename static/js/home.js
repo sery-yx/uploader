@@ -1,6 +1,7 @@
 import {
   KEY_STORAGE,
   STORAGE,
+  confirmAction,
   copy,
   describePerms,
   el,
@@ -529,22 +530,80 @@ function renderRecent() {
     copyBtn.setAttribute('aria-label', `Copy link to ${id}`);
     copyBtn.addEventListener('click', () => copy(r.link, copyBtn));
 
-    const del = el('a', 'icon-btn small');
-    del.href = r.deletion;
-    del.target = '_blank';
-    del.rel = 'noopener';
+    const del = el('button', 'icon-btn small danger-target');
+    del.type = 'button';
     del.append(icon('trash'));
     setLabel(del, 'Delete file');
-    del.setAttribute('aria-label', `Delete ${id} (opens a new tab)`);
-    del.dataset.hint = 'Opens the deletion page.';
+    del.setAttribute('aria-label', `Delete ${id}`);
+    del.addEventListener('click', async () => {
+      if (del.getAttribute('aria-disabled') === 'true') return;
+      const ok = await confirmAction(del, {
+        title: `Delete ${id}?`,
+        detail: 'Its link stops working for everyone. This can’t be undone.',
+        action: 'Delete file',
+      });
+      if (!ok) return;
+      del.setAttribute('aria-disabled', 'true');
+      try {
+        await deleteUpload(r);
+      } catch (err) {
+        del.removeAttribute('aria-disabled');
+        toast('Couldn’t delete the file.', { type: 'error', detail: err.message });
+        return;
+      }
+      const rows = [...recentList.children];
+      const at = rows.indexOf(row);
+      const nextId = (rows[at + 1] ?? rows[at - 1])?.dataset.id;
+      forgetRecent(r);
+      toast('File deleted.', { type: 'success' });
+      const next =
+        nextId && recentList.querySelector(`[data-id="${CSS.escape(nextId)}"] .danger-target`);
+      (next || $('forget-key')).focus();
+    });
 
     tools.append(copyBtn, del);
+    row.dataset.id = id;
     row.append(thumb, meta, tools);
     recentList.append(row);
   }
 }
 
-$('clear-recent').addEventListener('click', () => {
+/** The path of a deletion link: it carries the configured domain, which may not be this one. */
+function pathOf(url) {
+  try {
+    return new URL(url, location.href).pathname;
+  } catch {
+    return null;
+  }
+}
+
+/** Deletes an upload with its deletion link. A file that's already gone counts as deleted. */
+async function deleteUpload(r) {
+  const path = pathOf(r.deletion);
+  if (!path?.startsWith('/d/')) throw new Error('This entry has no deletion link.');
+  const res = await fetch(path, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) throw new Error(errorMessage(res.status, await res.text()));
+}
+
+/** Drops one upload from the recent list. */
+function forgetRecent(r) {
+  const list = store.json(STORAGE.recent, []);
+  if (Array.isArray(list))
+    store.set(
+      STORAGE.recent,
+      JSON.stringify(list.filter(x => pathOf(x?.deletion) !== pathOf(r.deletion))),
+    );
+  renderRecent();
+}
+
+$('clear-recent').addEventListener('click', async e => {
+  const ok = await confirmAction(e.currentTarget, {
+    title: 'Clear the recent list?',
+    detail:
+      'Only this list is cleared. The files stay online, but their deletion links go with it.',
+    action: 'Clear list',
+  });
+  if (!ok) return;
   store.set(STORAGE.recent, null);
   renderRecent();
   toast('List cleared.', { detail: 'The files themselves are still online.' });

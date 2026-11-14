@@ -283,11 +283,14 @@ export async function copy(text, button) {
 // ---------- tooltips ----------
 
 let tip = null;
+let tipFor = null; // the element the tooltip shows (or is about to show) for
 let tipTimer = 0;
+let tipMuted = null; // pressed: no tooltip again until the pointer leaves it
 let lastHidden = -Infinity; // no tooltip yet, so the first one waits
 
 function showTip(target) {
   hideTip();
+  tipFor = target;
   const label = target.dataset.tip;
   if (!label) return;
   tip = el('div', 'tooltip', label);
@@ -307,6 +310,7 @@ function showTip(target) {
 
 function hideTip() {
   clearTimeout(tipTimer);
+  tipFor = null;
   if (tip) {
     tip.remove();
     tip = null;
@@ -317,20 +321,36 @@ function hideTip() {
 function initTooltips() {
   const schedule = e => {
     const target = e.target.closest?.('[data-tip]');
-    if (!target) return;
+    // Moving between a button's own parts (its icon, its label) isn't a new hover.
+    if (!target || target === tipFor || target === tipMuted) return;
     clearTimeout(tipTimer);
+    tipFor = target;
     // Once one has shown, the next within 400 ms is instant.
     const delay = performance.now() - lastHidden < 400 ? 0 : 150;
     tipTimer = setTimeout(() => showTip(target), delay);
   };
   const leave = e => {
-    if (e.target.closest?.('[data-tip]')) hideTip();
+    const target = e.target.closest?.('[data-tip]');
+    // Only leaving the element itself hides it, not moving onto one of its children.
+    if (target && !target.contains(e.relatedTarget)) {
+      // Only the pointer leaving lifts the mute; focus moving away (into a form it opened)
+      // doesn't mean the pointer left.
+      if (target === tipMuted && e.type === 'pointerout') tipMuted = null;
+      hideTip();
+    }
   };
   document.addEventListener('pointerover', e => e.pointerType === 'mouse' && schedule(e));
   document.addEventListener('pointerout', leave);
   document.addEventListener('focusin', e => e.target.matches?.(':focus-visible') && schedule(e));
   document.addEventListener('focusout', leave);
-  document.addEventListener('pointerdown', hideTip, true);
+  document.addEventListener(
+    'pointerdown',
+    e => {
+      tipMuted = e.target.closest?.('[data-tip]') ?? null;
+      hideTip();
+    },
+    true,
+  );
   addEventListener('scroll', hideTip, true);
   addEventListener('resize', hideTip);
   document.addEventListener('keydown', e => e.key === 'Escape' && hideTip());
@@ -341,6 +361,102 @@ export function setLabel(button, label) {
   button.setAttribute('aria-label', label);
   button.dataset.tip = label;
   if (tip) hideTip();
+}
+
+// ---------- confirmation bubble ----------
+
+let openConfirm = null;
+
+/**
+ * A small popover by `anchor` that asks before something destructive: a title, an optional
+ * line of detail, Cancel and the action. It floats, so nothing around it moves. Resolves true
+ * when the action is picked; Escape, Cancel, an outside click or opening another one resolve
+ * false. Focus goes back to the anchor either way.
+ */
+export function confirmAction(anchor, { title, detail, action, danger = true }) {
+  if (openConfirm?.anchor === anchor) {
+    openConfirm.close(false);
+    return Promise.resolve(false);
+  }
+  openConfirm?.close(false, { refocus: false });
+  hideTip();
+
+  return new Promise(resolve => {
+    const id = `confirm-${Math.random().toString(36).slice(2, 8)}`;
+    const pop = el('div', 'popover confirm');
+    pop.setAttribute('role', 'alertdialog');
+    pop.setAttribute('aria-labelledby', `${id}-title`);
+    pop.tabIndex = -1;
+    const heading = el('p', 'confirm-title', title);
+    heading.id = `${id}-title`;
+    pop.append(heading);
+    if (detail) {
+      const p = el('p', 'confirm-detail', detail);
+      p.id = `${id}-detail`;
+      pop.setAttribute('aria-describedby', p.id);
+      pop.append(p);
+    }
+    const actions = el('div', 'confirm-actions');
+    const cancel = el('button', 'btn secondary small', 'Cancel');
+    cancel.type = 'button';
+    const go = el('button', `btn ${danger ? 'danger' : 'primary'} small`, action);
+    go.type = 'button';
+    actions.append(cancel, go);
+    pop.append(actions);
+    document.body.append(pop);
+
+    const place = () => {
+      const r = anchor.getBoundingClientRect();
+      const p = pop.getBoundingClientRect();
+      // Aligned to the anchor's end, 6px below; above when there isn't room. Never over it.
+      let top = r.bottom + 6;
+      if (top + p.height > innerHeight - 8 && r.top - p.height - 6 >= 8) top = r.top - p.height - 6;
+      const left = Math.min(Math.max(8, r.right - p.width), innerWidth - p.width - 8);
+      pop.style.top = `${top}px`;
+      pop.style.left = `${left}px`;
+    };
+    place();
+
+    const outside = e => {
+      if (!pop.contains(e.target) && !anchor.contains(e.target)) close(false, { refocus: false });
+    };
+    const keys = e => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        close(false);
+      } else if (e.key === 'Tab') {
+        // Keep Tab inside the two buttons while it's open.
+        const first = cancel;
+        const last = go;
+        if (e.shiftKey && document.activeElement === first) (e.preventDefault(), last.focus());
+        else if (!e.shiftKey && document.activeElement === last)
+          (e.preventDefault(), first.focus());
+        else if (document.activeElement === pop)
+          (e.preventDefault(), (e.shiftKey ? last : first).focus());
+      }
+    };
+    function close(result, { refocus = true } = {}) {
+      if (openConfirm?.pop !== pop) return;
+      openConfirm = null;
+      document.removeEventListener('pointerdown', outside, true);
+      removeEventListener('resize', place);
+      removeEventListener('scroll', place, true);
+      anchor.removeAttribute('aria-expanded');
+      pop.remove();
+      if (refocus) anchor.focus();
+      resolve(result);
+    }
+    openConfirm = { anchor, pop, close };
+    anchor.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', outside, true);
+    addEventListener('resize', place);
+    addEventListener('scroll', place, true);
+    pop.addEventListener('keydown', keys);
+    cancel.addEventListener('click', () => close(false));
+    go.addEventListener('click', () => close(true));
+    // Keyboard users land on Cancel; a mouse press puts focus on the panel without a ring.
+    (anchor.matches(':focus-visible') ? cancel : pop).focus();
+  });
 }
 
 // ---------- theme ----------

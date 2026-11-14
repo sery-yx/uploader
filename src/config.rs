@@ -22,7 +22,7 @@ pub struct Config {
     pub authorization: String,
     #[serde(deserialize_with = "from_base64")]
     pub secret: Secret,
-    /// Largest accepted upload in MiB.
+    /// Largest accepted upload in MiB (default 5 GiB).
     #[serde(default = "default_max_upload_mib")]
     pub max_upload_mib: u64,
     /// Where scoped upload keys are kept (hashed). Created on first use.
@@ -35,7 +35,7 @@ fn default_keys_file() -> PathBuf {
 }
 
 fn default_max_upload_mib() -> u64 {
-    256
+    5 * 1024
 }
 
 impl Config {

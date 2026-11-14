@@ -1539,16 +1539,6 @@ textarea.field {
   justify-content: flex-end;
   gap: 8px;
 }
-.icon-btn.armed {
-  background: color-mix(in srgb, var(--red) 14%, transparent);
-  color: var(--red);
-}
-.armed-note {
-  flex-basis: 100%;
-  color: var(--red);
-  font-size: var(--text-hint);
-  text-align: right;
-}
 .upload-bar .key-scope {
   flex: 1;
   text-align: right;
@@ -1587,4 +1577,128 @@ textarea.field {
 .icon-btn[aria-disabled='true'] {
   opacity: 0.4;
   cursor: progress;
+}
+
+/* ---- one input height for File and Text ----
+   Both panels take the same fixed height, so switching tabs or picking a file never moves the
+   buttons below. The textarea fills what the character count leaves. */
+#upload-form {
+  --input-h: 360px;
+}
+#panel-file,
+#panel-text:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  height: var(--input-h);
+}
+#panel-file > .drop:not([hidden]) {
+  flex: 1;
+  min-height: 0;
+}
+#panel-file > .drop.picked {
+  padding: 20px;
+}
+#panel-file .picked .thumb {
+  width: 200px;
+  height: 150px;
+}
+#panel-text textarea.field {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+}
+@media (max-width: 640px) {
+  #upload-form {
+    --input-h: 320px;
+  }
+  #panel-file > .drop.picked {
+    padding: 16px;
+    align-content: center;
+  }
+  #panel-file .picked .thumb {
+    width: 100%;
+    height: 160px;
+  }
+  #panel-file .picked-meta + .btn {
+    flex: 1;
+  }
+}
+
+/* ---- confirmation bubble ---- */
+.popover {
+  position: fixed;
+  z-index: var(--z-popover);
+  min-width: 220px;
+  padding: 4px;
+  background: var(--elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop);
+}
+.popover:focus {
+  outline: none;
+}
+.popover.confirm {
+  width: min(280px, 100vw - 16px);
+  padding: 12px;
+  animation: pop-in var(--fast) var(--ease, ease-out);
+  transform-origin: top right;
+}
+.confirm-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.confirm-detail {
+  margin: 4px 0 0;
+  font-size: var(--text-hint);
+  color: var(--muted);
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .popover.confirm {
+    animation: none;
+  }
+}
+@media (forced-colors: active) {
+  .popover {
+    border-color: CanvasText;
+  }
+}
+.icon-btn[aria-expanded='true'] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.icon-btn.danger-target[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  color: var(--red);
+}
+
+/* ---- Keys page: select all, shown key ---- */
+.checks .check-all {
+  margin-left: auto;
+}
+.key-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-basis: 100%;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.key-reveal .field {
+  font-size: 0.8rem;
 }
