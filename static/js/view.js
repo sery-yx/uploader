@@ -104,8 +104,14 @@ function initImage() {
     // Drag to move around a zoomed picture; a press without a drag is a click.
     let drag = null;
     let dragged = false;
+    // The browser's own picture drag (to save or drop it elsewhere) would take the gesture.
+    img.draggable = false;
+    img.addEventListener('dragstart', e => e.preventDefault());
     stage.addEventListener('pointerdown', e => {
       if (e.pointerType !== 'mouse' || e.button !== 0 || !zoomed) return;
+      // No text selection or native drag while moving around; keep the keys working.
+      e.preventDefault();
+      stage.focus({ preventScroll: true });
       drag = { x: e.clientX, y: e.clientY, left: stage.scrollLeft, top: stage.scrollTop };
       dragged = false;
     });

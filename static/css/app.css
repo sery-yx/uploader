@@ -891,8 +891,12 @@ textarea.field {
   cursor: zoom-in;
   image-rendering: auto;
 }
+.stage-image img {
+  user-select: none;
+  -webkit-user-drag: none;
+}
 .stage-image.zoomed img {
-  cursor: zoom-out;
+  cursor: grab;
 }
 .stage-image.dragging img {
   cursor: grabbing;
