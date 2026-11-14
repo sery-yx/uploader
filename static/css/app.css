@@ -866,30 +866,39 @@ textarea.field {
   border: 1px solid var(--border);
 }
 .stage-image {
-  min-height: 240px;
-  /* The picture fills the width (view.js sizes it), so no padding to frame it in. */
-  padding: 0;
-  background: var(--media-ground);
+  /* No box: the picture sits on the page. Zoomed in, this area scrolls and can be dragged. */
+  display: flex;
+  /* Its own width, not the picture's: a zoomed picture scrolls inside it. */
+  width: 100%;
+  min-width: 0;
+  max-height: calc(100vh - 230px);
+  max-height: max(160px, 100dvh - 230px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: none;
+  border: 0;
+}
+.stage-image:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 .stage-image img {
-  display: block;
+  flex: none;
+  /* Centred while it fits; when it's larger, margin:auto still lets every edge scroll into view. */
+  margin: auto;
   max-width: 100%;
   height: auto;
   cursor: zoom-in;
   image-rendering: auto;
 }
-.stage-image.actual {
-  place-items: start;
-  overflow: auto;
-  max-height: calc(100vh - 200px);
-  max-height: max(200px, 100dvh - 200px);
-}
-.stage-image.actual img {
-  max-width: none;
+.stage-image.zoomed img {
   cursor: zoom-out;
 }
-.stage-image.pixel img {
-  /* Tiny pixel art and icons scale up crisp instead of blurry. */
+.stage-image.dragging img {
+  cursor: grabbing;
+}
+.stage-image.crisp img {
+  /* Tiny pixel art and icons zoom in crisp instead of blurry. */
   image-rendering: pixelated;
 }
 

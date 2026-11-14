@@ -41,65 +41,113 @@ function initImage() {
   const ready = () => {
     const { naturalWidth: w, naturalHeight: h } = img;
     addMeta(`${groupThousands(w)} × ${groupThousands(h)}`);
-    // Tiny pixel art scales up crisp instead of blurry, and as far as it likes.
     const pixel = w <= 128 && h <= 128;
-    stage.classList.toggle('pixel', pixel);
-    // Photos scale up to 3× at most; past that they only get blurrier.
-    const maxScale = pixel ? Infinity : 3;
+    const MAX = 16;
 
-    /** Sizes the picture to fill the space it has, up or down. Returns the scale used. */
-    const fit = () => {
-      if (stage.classList.contains('actual')) {
-        img.style.width = '';
-        return 1;
-      }
-      const room = stage.clientWidth;
-      const tall = Math.max(160, innerHeight - 230);
-      const scale = Math.min(room / w, tall / h, maxScale);
+    /** Real size, or smaller when the picture is larger than the window. */
+    const base = () => Math.min(1, stage.clientWidth / w, Math.max(160, innerHeight - 230) / h);
+    let scale = base();
+    let zoomed = false; // changed by the user; a resize keeps it
+
+    const syncHint = () => {
+      const pct = `${groupThousands(Math.round(scale * 100))} %`;
+      const touch = matchMedia('(hover: none)').matches;
+      hint.textContent = zoomed
+        ? `${pct} · ${touch ? 'Tap to zoom out, swipe' : 'Click to zoom out, drag'} to move around.`
+        : `${pct} · ${touch ? 'Tap' : 'Scroll or click'} to zoom in.`;
+      stage.setAttribute('aria-label', `Picture at ${pct}. Plus and minus zoom, 0 resets.`);
+    };
+
+    /**
+     * Zooms to `next`, keeping the point (`x`, `y`, relative to the stage's box) where it is on
+     * screen. Without a point it keeps the middle.
+     */
+    const zoomTo = (next, x = stage.clientWidth / 2, y = stage.clientHeight / 2) => {
+      const b = base();
+      next = Math.min(Math.max(next, b), Math.max(MAX, b));
+      const box = stage.getBoundingClientRect();
+      const before = img.getBoundingClientRect();
+      // That point in the picture's own pixels.
+      const px = (box.left + x - before.left) / scale;
+      const py = (box.top + y - before.top) / scale;
+      scale = next;
+      zoomed = Math.abs(scale - b) > 0.001;
       img.style.width = `${Math.max(1, Math.round(w * scale))}px`;
-      return scale;
+      stage.classList.toggle('zoomed', zoomed);
+      stage.classList.toggle('crisp', pixel && scale > 1);
+      const after = img.getBoundingClientRect();
+      stage.scrollLeft += after.left + px * scale - (box.left + x);
+      stage.scrollTop += after.top + py * scale - (box.top + y);
+      syncHint();
     };
-    let scale = fit();
-    // Worth a click when the fitted size isn't the real size.
-    const zoomable = () => stage.classList.contains('actual') || Math.abs(scale - 1) > 0.01;
-    const sync = () => {
-      scale = fit();
-      const can = zoomable();
-      hint.hidden = !can;
-      if (can) {
-        stage.tabIndex = 0;
-        stage.setAttribute('role', 'button');
-        const actual = stage.classList.contains('actual');
-        // A fixed name; aria-pressed says which way it is.
-        stage.setAttribute('aria-label', 'Real size');
-        stage.setAttribute('aria-pressed', String(actual));
-        hint.textContent = actual
-          ? 'Click the picture to fit it to the window.'
-          : 'Click the picture to see it at its real size.';
-      } else {
-        stage.removeAttribute('tabindex');
-        stage.removeAttribute('role');
-        stage.removeAttribute('aria-label');
-        stage.removeAttribute('aria-pressed');
-      }
-    };
-    const toggle = () => {
-      if (!zoomable()) return;
-      stage.classList.toggle('actual');
-      sync();
-    };
-    stage.addEventListener('click', toggle);
-    stage.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ' ') {
+
+    img.style.maxWidth = 'none';
+    zoomTo(base());
+    hint.hidden = false;
+    stage.tabIndex = 0;
+    stage.setAttribute('role', 'group');
+
+    // Scroll to zoom around the pointer. Zooming out past the start lets the page scroll.
+    stage.addEventListener(
+      'wheel',
+      e => {
+        if (e.ctrlKey) return; // the browser's own page zoom
+        const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);
+        if (delta > 0 && !zoomed) return;
         e.preventDefault();
-        toggle();
-      } else if (e.key === 'Escape' && stage.classList.contains('actual')) {
-        e.preventDefault();
-        toggle();
-      }
+        const box = stage.getBoundingClientRect();
+        zoomTo(scale * Math.exp(-delta * 0.002), e.clientX - box.left, e.clientY - box.top);
+      },
+      { passive: false },
+    );
+
+    // Drag to move around a zoomed picture; a press without a drag is a click.
+    let drag = null;
+    let dragged = false;
+    stage.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'mouse' || e.button !== 0 || !zoomed) return;
+      drag = { x: e.clientX, y: e.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+      dragged = false;
     });
-    addEventListener('resize', sync);
-    sync();
+    addEventListener('pointermove', e => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      if (!dragged && Math.hypot(dx, dy) < 4) return;
+      if (!dragged) {
+        dragged = true;
+        stage.classList.add('dragging');
+      }
+      stage.scrollLeft = drag.left - dx;
+      stage.scrollTop = drag.top - dy;
+    });
+    addEventListener('pointerup', () => {
+      drag = null;
+      stage.classList.remove('dragging');
+    });
+
+    // Click zooms in at that spot (twice the size); a click while zoomed goes back.
+    stage.addEventListener('click', e => {
+      if (dragged) {
+        dragged = false;
+        return;
+      }
+      const box = stage.getBoundingClientRect();
+      if (zoomed) zoomTo(base());
+      else zoomTo(Math.max(scale * 2, 1), e.clientX - box.left, e.clientY - box.top);
+    });
+
+    stage.addEventListener('keydown', e => {
+      const step = { '+': 1.25, '=': 1.25, '-': 0.8, _: 0.8 }[e.key];
+      if (step) zoomTo(scale * step);
+      else if (e.key === '0' || (e.key === 'Escape' && zoomed)) zoomTo(base());
+      else if (e.key === 'Enter' || e.key === ' ')
+        zoomed ? zoomTo(base()) : zoomTo(Math.max(scale * 2, 1));
+      else return;
+      e.preventDefault();
+    });
+
+    addEventListener('resize', () => zoomTo(zoomed ? scale : base()));
   };
 
   const failed = () => {

@@ -44,7 +44,7 @@
   <div class="stage stage-image" id="stage">
     <img id="media" src="{{ raw }}" alt="{{ name }}" decoding="async" />
   </div>
-  <p class="hint view-foot" id="image-hint" hidden>Click the picture to see it at full size.</p>
+  <p class="hint view-foot" id="image-hint" hidden></p>
 
   {%- else if kind == "video" || kind == "audio" %}
   <div class="player" id="player" data-type="{{ kind }}">
