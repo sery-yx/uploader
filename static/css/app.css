@@ -867,23 +867,14 @@ textarea.field {
 }
 .stage-image {
   min-height: 240px;
-  padding: 12px;
-  background-color: var(--media-ground);
-  /* A faint check shows where a picture is transparent. */
-  background-image: conic-gradient(
-    rgb(255 255 255 / 0.04) 25%,
-    transparent 0 50%,
-    rgb(255 255 255 / 0.04) 0 75%,
-    transparent 0
-  );
-  background-size: 20px 20px;
+  /* The picture fills the width (view.js sizes it), so no padding to frame it in. */
+  padding: 0;
+  background: var(--media-ground);
 }
 .stage-image img {
-  max-height: calc(100vh - 230px);
-  max-height: max(160px, 100dvh - 230px);
-  width: auto;
+  display: block;
+  max-width: 100%;
   height: auto;
-  object-fit: contain;
   cursor: zoom-in;
   image-rendering: auto;
 }
@@ -895,13 +886,10 @@ textarea.field {
 }
 .stage-image.actual img {
   max-width: none;
-  max-height: none;
   cursor: zoom-out;
 }
 .stage-image.pixel img {
-  /* Tiny pixel art and icons scale up crisp instead of sitting there as a dot. */
-  width: min(100%, 256px);
-  height: auto;
+  /* Tiny pixel art and icons scale up crisp instead of blurry. */
   image-rendering: pixelated;
 }
 

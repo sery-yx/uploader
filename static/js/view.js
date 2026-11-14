@@ -41,11 +41,29 @@ function initImage() {
   const ready = () => {
     const { naturalWidth: w, naturalHeight: h } = img;
     addMeta(`${groupThousands(w)} × ${groupThousands(h)}`);
-    // Tiny pixel art scales up crisp instead of blurry.
-    if (w <= 128 && h <= 128) stage.classList.add('pixel');
-    const zoomable = () =>
-      w > img.clientWidth + 1 || h > img.clientHeight + 1 || stage.classList.contains('actual');
+    // Tiny pixel art scales up crisp instead of blurry, and as far as it likes.
+    const pixel = w <= 128 && h <= 128;
+    stage.classList.toggle('pixel', pixel);
+    // Photos scale up to 3× at most; past that they only get blurrier.
+    const maxScale = pixel ? Infinity : 3;
+
+    /** Sizes the picture to fill the space it has, up or down. Returns the scale used. */
+    const fit = () => {
+      if (stage.classList.contains('actual')) {
+        img.style.width = '';
+        return 1;
+      }
+      const room = stage.clientWidth;
+      const tall = Math.max(160, innerHeight - 230);
+      const scale = Math.min(room / w, tall / h, maxScale);
+      img.style.width = `${Math.max(1, Math.round(w * scale))}px`;
+      return scale;
+    };
+    let scale = fit();
+    // Worth a click when the fitted size isn't the real size.
+    const zoomable = () => stage.classList.contains('actual') || Math.abs(scale - 1) > 0.01;
     const sync = () => {
+      scale = fit();
       const can = zoomable();
       hint.hidden = !can;
       if (can) {
@@ -53,11 +71,11 @@ function initImage() {
         stage.setAttribute('role', 'button');
         const actual = stage.classList.contains('actual');
         // A fixed name; aria-pressed says which way it is.
-        stage.setAttribute('aria-label', 'Full size');
+        stage.setAttribute('aria-label', 'Real size');
         stage.setAttribute('aria-pressed', String(actual));
         hint.textContent = actual
           ? 'Click the picture to fit it to the window.'
-          : 'Click the picture to see it at full size.';
+          : 'Click the picture to see it at its real size.';
       } else {
         stage.removeAttribute('tabindex');
         stage.removeAttribute('role');
