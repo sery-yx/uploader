@@ -1,0 +1,19 @@
+services:
+  uploader:
+    build: .
+    container_name: uploader
+    user: 296:296
+    volumes:
+      - "./config.toml:/app/config.toml:ro"
+      - "./uploads:/app/uploads"
+      - ./data:/data
+    restart: unless-stopped
+    networks:
+      - public # cloudflared
+    environment:
+      - KEYS_PATH=/data/keys.json
+
+networks:
+  public:
+    external: true
+    name: cloudflared_public
