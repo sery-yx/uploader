@@ -75,6 +75,9 @@ function initImage() {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         toggle();
+      } else if (e.key === 'Escape' && stage.classList.contains('actual')) {
+        e.preventDefault();
+        toggle();
       }
     });
     addEventListener('resize', sync);
@@ -401,6 +404,20 @@ async function initText() {
   } catch {
     info.textContent = 'Couldn’t load the text.';
     toast('Couldn’t load the text.', { type: 'error', detail: 'Reload the page to try again.' });
+    return;
+  }
+
+  // Bytes that aren't text (a binary file named .txt): say so instead of showing noise.
+  const sample = text.slice(0, 8192);
+  const junk = (sample.match(/[\0\uFFFD]/g) ?? []).length;
+  if (sample.includes('\0') || junk > sample.length / 20) {
+    info.textContent = 'This file isn’t readable text.';
+    code.hidden = true;
+    notice.textContent = 'It looks like binary data. Download it to open it in the right app.';
+    notice.hidden = false;
+    hlBtn.hidden = true;
+    wrapBtn.hidden = true;
+    copyBtn.hidden = true;
     return;
   }
 

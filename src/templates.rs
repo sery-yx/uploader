@@ -72,7 +72,7 @@ pub enum DeleteState {
 impl DeleteState {
     pub fn status(self) -> StatusCode {
         match self {
-            DeleteState::Invalid => StatusCode::UNAUTHORIZED,
+            DeleteState::Invalid => StatusCode::NOT_FOUND,
             DeleteState::Gone => StatusCode::NOT_FOUND,
             DeleteState::Ready => StatusCode::OK,
         }
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn delete_state_maps_to_status() {
-        assert_eq!(DeleteState::Invalid.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(DeleteState::Invalid.status(), StatusCode::NOT_FOUND);
         assert_eq!(DeleteState::Gone.status(), StatusCode::NOT_FOUND);
         assert_eq!(DeleteState::Ready.status(), StatusCode::OK);
     }

@@ -143,6 +143,7 @@ $('create-form').addEventListener('submit', async e => {
   }
   if (perms.length === 0) {
     toast('Pick at least one kind of file.', { type: 'error' });
+    document.querySelector('#create-form [data-perms] input')?.focus();
     return;
   }
   const label = button.lastChild;
@@ -196,10 +197,28 @@ function renderRow(key) {
   const edit = iconButton('pencil', 'Edit');
   const reset = iconButton('rotate', 'Reset key', 'Makes a new key. The old one stops working.');
   const del = iconButton('trash', 'Delete key', 'The key stops working. Its uploads stay online.');
-  reset.classList.add('danger-target');
-  del.classList.add('danger-target');
+  for (const b of [reset, del]) {
+    b.classList.add('danger-target');
+    b.setAttribute('aria-haspopup', 'dialog');
+    b.setAttribute('aria-expanded', 'false');
+  }
+  if (!key.viewable) {
+    // Still pressable, so it can explain itself, but it looks and reads as unavailable.
+    show.classList.add('unavailable');
+    show.dataset.hint = '';
+  }
   // The tooltip stays short; the accessible name says which key.
-  show.setAttribute('aria-label', `Show the key for ${key.name}`);
+  show.setAttribute(
+    'aria-label',
+    key.viewable
+      ? `Show the key for ${key.name}`
+      : `The key for ${key.name} can’t be shown; reset it to get one that can`,
+  );
+  if (!key.viewable) {
+    const name = show.getAttribute('aria-label');
+    setLabel(show, 'Can’t be shown. Reset it first.');
+    show.setAttribute('aria-label', name);
+  }
   show.setAttribute('aria-expanded', 'false');
   edit.setAttribute('aria-label', `Edit ${key.name}`);
   reset.setAttribute('aria-label', `Reset ${key.name}`);
@@ -244,11 +263,10 @@ function renderRow(key) {
     if (!token || row.querySelector('.key-reveal')) return;
     const panel = el('div', 'key-reveal');
     const fieldRow = el('div', 'field-row');
-    const field = el('input', 'field mono');
-    field.readOnly = true;
-    field.value = token;
+    // A code block rather than an input, so the whole key wraps into view on phones.
+    const field = el('code', 'field key-value', token);
+    field.tabIndex = 0;
     field.setAttribute('aria-label', `Key for ${key.name}`);
-    field.addEventListener('focus', () => field.select());
     const copyBtn = el('button', 'btn secondary small');
     copyBtn.type = 'button';
     copyBtn.append(icon('copy'), 'Copy key');

@@ -1644,6 +1644,9 @@ textarea.field {
   animation: pop-in var(--fast) var(--ease, ease-out);
   transform-origin: top right;
 }
+.popover.confirm[data-side='above'] {
+  transform-origin: bottom right;
+}
 .confirm-title {
   margin: 0;
   font-size: 0.85rem;
@@ -1701,4 +1704,91 @@ textarea.field {
 }
 .key-reveal .field {
   font-size: 0.8rem;
+}
+
+/* ---- long names, small screens ---- */
+html {
+  scroll-padding-top: 80px;
+}
+.confirm-title,
+.confirm-detail,
+#secret-heading,
+.key-name {
+  overflow-wrap: anywhere;
+}
+.result-head,
+.result-head > span {
+  min-width: 0;
+}
+.checks .check-all {
+  min-height: 28px;
+  align-self: center;
+}
+.secret-tools > .btn.ghost:first-child,
+.key-reveal .secret-tools > .btn.ghost {
+  margin-left: -10px;
+}
+.icon-btn.unavailable {
+  opacity: 0.45;
+}
+@media (max-width: 360px) {
+  .key-row .row-tools {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+  .checks .check-all {
+    margin-left: 0;
+  }
+}
+@media (max-width: 640px) {
+  .key-reveal .field-row {
+    flex-direction: column;
+  }
+}
+.key-value {
+  display: block;
+  height: auto;
+  min-height: 32px;
+  padding: 7px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.key-reveal .field-row .btn {
+  flex: none;
+}
+
+/* ---- upload page details ---- */
+.picked-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+#upload-hint.bad {
+  color: var(--red);
+}
+.field-error + .hint {
+  margin-top: 6px;
+}
+.key-bar .btn.ghost {
+  margin-right: -10px;
+}
+/* The light ground needs the darker accent for the slider fill to read (3:1 for UI parts). */
+:root[data-theme='light'] .range {
+  --accent: var(--accent-text);
+}
+
+#result {
+  margin-bottom: 16px;
+}
+
+/* Keeps the deletion row's fields lined up with the link row, which has an open button. */
+.icon-btn.spacer {
+  visibility: hidden;
+  pointer-events: none;
 }

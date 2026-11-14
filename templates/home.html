@@ -10,7 +10,7 @@
 <div class="narrow" id="home" data-max-bytes="{{ max_upload_bytes }}" data-max-label="{{ max_upload }}" data-kinds="{{ kinds }}">
   <div class="page-head">
     <h1>Upload</h1>
-    <p class="sub">Pictures, GIFs, video, audio, text or any other file, up to {{ max_upload }}.</p>
+    <p class="sub" id="home-sub">Pictures, GIFs, video, audio, text or any other file, up to {{ max_upload }}.</p>
   </div>
 
   <noscript>
@@ -29,6 +29,28 @@
   </form>
 
   <div id="uploader" hidden>
+    <section class="card result" id="result" hidden aria-labelledby="result-title" tabindex="-1">
+      <h2 class="result-head" id="result-title">{% call m::i("circle-check") %}{% endcall %}<span>Uploaded</span></h2>
+      <div>
+        <label class="label field-label" for="result-link">Link</label>
+        <div class="field-row">
+          <input class="field" id="result-link" readonly />
+          <button type="button" class="btn secondary" data-copy="result-link" aria-label="Copy link">{% call m::i("copy") %}{% endcall %}Copy</button>
+          <a class="icon-btn" id="result-open" href="#" target="_blank" rel="noopener" aria-label="Open in a new tab" data-tip="Open in a new tab">{% call m::i("external") %}{% endcall %}</a>
+        </div>
+      </div>
+      <div>
+        <label class="label field-label" for="result-delete">Deletion link</label>
+        <div class="field-row">
+          <input class="field" id="result-delete" readonly aria-describedby="result-delete-hint" />
+          <button type="button" class="btn secondary" data-copy="result-delete" aria-label="Copy deletion link">{% call m::i("copy") %}{% endcall %}Copy</button>
+          <span class="icon-btn spacer" aria-hidden="true"></span>
+        </div>
+        <p class="hint" id="result-delete-hint">Anyone with this link can delete the file. It’s also kept in your recent uploads below.</p>
+      </div>
+      <div><button type="button" class="btn link small" id="again">Upload another</button></div>
+    </section>
+
     <div class="upload-bar">
       <div class="segmented" role="tablist" aria-label="What to upload">
         <button type="button" role="tab" id="tab-file" aria-selected="true" aria-controls="panel-file">File</button>
@@ -80,26 +102,6 @@
       </div>
     </form>
 
-    <section class="card result" id="result" hidden aria-labelledby="result-title" tabindex="-1">
-      <h2 class="result-head" id="result-title">{% call m::i("circle-check") %}{% endcall %}<span>Uploaded</span></h2>
-      <div>
-        <label class="label field-label" for="result-link">Link</label>
-        <div class="field-row">
-          <input class="field" id="result-link" readonly />
-          <button type="button" class="btn secondary" data-copy="result-link">{% call m::i("copy") %}{% endcall %}Copy link</button>
-          <a class="icon-btn" id="result-open" href="#" target="_blank" rel="noopener" aria-label="Open in a new tab" data-tip="Open in a new tab">{% call m::i("external") %}{% endcall %}</a>
-        </div>
-      </div>
-      <div>
-        <label class="label field-label" for="result-delete">Deletion link</label>
-        <div class="field-row">
-          <input class="field" id="result-delete" readonly aria-describedby="result-delete-hint" />
-          <button type="button" class="btn secondary" data-copy="result-delete" aria-label="Copy deletion link">{% call m::i("copy") %}{% endcall %}Copy</button>
-        </div>
-        <p class="hint" id="result-delete-hint">Anyone with this link can delete the file. It’s also kept in your recent uploads below.</p>
-      </div>
-      <div><button type="button" class="btn link small" id="again">Upload another</button></div>
-    </section>
 
     <div class="key-bar">
       <button type="button" class="btn ghost small" id="forget-key">{% call m::i("key") %}{% endcall %}Forget key</button>
@@ -107,7 +109,7 @@
 
     <section class="recent" aria-labelledby="recent-title">
       <div class="section-head">
-        <h2 class="label" id="recent-title">Recent uploads</h2>
+        <h2 class="label" id="recent-title" tabindex="-1">Recent uploads</h2>
         <button type="button" class="btn link small" id="clear-recent" hidden>Clear list</button>
       </div>
       <ul class="rows" id="recent-list" hidden></ul>

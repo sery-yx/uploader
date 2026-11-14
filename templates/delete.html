@@ -17,9 +17,7 @@
   <p class="file-ref">{{ name }}</p>
   <div class="task-actions"><a class="btn secondary" href="/">Go to upload</a></div>
   {%- when DeleteState::Ready %}
-  <div data-step="ask">
-    <h1 id="delete-title">Delete this file?</h1>
-  </div>
+  <div class="state" data-step="ask">{% call m::i("trash") %}{% endcall %}<h1 id="delete-title">Delete this file?</h1></div>
   <p class="file-ref" data-step="ask">{{ name }}</p>
   <p class="sub" data-step="ask">Its link stops working for everyone. This can’t be undone.</p>
   <div class="task-actions" data-step="ask">

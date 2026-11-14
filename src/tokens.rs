@@ -129,7 +129,7 @@ pub fn describe(perms: &BTreeSet<Perm>) -> String {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct KeyEntry {
     pub id: String,
     pub name: String,
@@ -144,6 +144,19 @@ pub struct KeyEntry {
     /// Unix seconds of the last reset, if any.
     #[serde(default)]
     pub reset: Option<u64>,
+}
+
+// By hand, so the key itself never ends up in a log line.
+impl std::fmt::Debug for KeyEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyEntry")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("perms", &self.perms)
+            .field("created", &self.created)
+            .field("reset", &self.reset)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the admin page sees: everything but the hash.
@@ -268,8 +281,14 @@ impl KeyStore {
     fn save(&self) -> io::Result<()> {
         let json = serde_json::to_string_pretty(&self.entries).map_err(io::Error::other)?;
         let tmp = self.path.with_extension("json.tmp");
+        // A fresh file every time, so it gets the owner-only mode below even if a leftover
+        // temporary file from an older version was readable by others.
+        match std::fs::remove_file(&tmp) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let mut file = options.open(&tmp)?;

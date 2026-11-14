@@ -81,7 +81,7 @@ pub async fn upload_multipart(
         .ok_or(UploadError::Empty)?;
     let filename = field.file_name().map(str::to_owned);
     // One budget for everything we read and throw away after a refusal.
-    let mut spare = limit;
+    let mut spare = drain_budget(limit);
     let result = store(&caller, &mut field, filename.as_deref(), &mut spare).await;
     if matches!(result, Err(UploadError::NotAllowed(_))) {
         // Read the rest of the form (the closing boundary, any extra fields) so the client
@@ -114,8 +114,17 @@ pub async fn upload_post(
         .get(FILENAME_POST_HEADER)
         .and_then(|h| h.to_str().ok())
         .map(str::to_owned);
-    let mut spare = limit;
+    let mut spare = drain_budget(limit);
     store(&caller, &mut body, filename.as_deref(), &mut spare).await
+}
+
+/// How much of a refused upload is read and thrown away so the client sees the 403. Small, so a
+/// key that may not upload something can't keep the server reading gigabytes for nothing; past
+/// it the connection is closed.
+const DRAIN_LIMIT: u64 = 8 * 1024 * 1024;
+
+fn drain_budget(limit: u64) -> u64 {
+    limit.min(DRAIN_LIMIT)
 }
 
 async fn store<S, E>(

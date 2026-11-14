@@ -341,7 +341,12 @@ function initTooltips() {
   };
   document.addEventListener('pointerover', e => e.pointerType === 'mouse' && schedule(e));
   document.addEventListener('pointerout', leave);
-  document.addEventListener('focusin', e => e.target.matches?.(':focus-visible') && schedule(e));
+  document.addEventListener('focusin', e => {
+    if (!e.target.matches?.(':focus-visible')) return;
+    // Keyboard focus on the pressed element itself gets its tooltip again.
+    if (e.target.closest?.('[data-tip]') === tipMuted) tipMuted = null;
+    schedule(e);
+  });
   document.addEventListener('focusout', leave);
   document.addEventListener(
     'pointerdown',
@@ -406,7 +411,11 @@ export function confirmAction(anchor, { title, detail, action, danger = true }) 
     document.body.append(pop);
 
     const place = () => {
+      // The list re-rendered under it: the button it belongs to is gone.
+      if (!anchor.isConnected) return close(false, { refocus: false });
       const r = anchor.getBoundingClientRect();
+      // Scrolled out of sight: close rather than float on with focus inside it.
+      if (r.bottom < 0 || r.top > innerHeight) return close(false, { scroll: false });
       const p = pop.getBoundingClientRect();
       // Aligned to the anchor's end, 6px below; above when there isn't room. Never over it.
       let top = r.bottom + 6;
@@ -414,8 +423,8 @@ export function confirmAction(anchor, { title, detail, action, danger = true }) 
       const left = Math.min(Math.max(8, r.right - p.width), innerWidth - p.width - 8);
       pop.style.top = `${top}px`;
       pop.style.left = `${left}px`;
+      pop.dataset.side = top < r.top ? 'above' : 'below';
     };
-    place();
 
     const outside = e => {
       if (!pop.contains(e.target) && !anchor.contains(e.target)) close(false, { refocus: false });
@@ -435,18 +444,20 @@ export function confirmAction(anchor, { title, detail, action, danger = true }) 
           (e.preventDefault(), (e.shiftKey ? last : first).focus());
       }
     };
-    function close(result, { refocus = true } = {}) {
+    function close(result, { refocus = true, scroll = true } = {}) {
       if (openConfirm?.pop !== pop) return;
       openConfirm = null;
       document.removeEventListener('pointerdown', outside, true);
       removeEventListener('resize', place);
       removeEventListener('scroll', place, true);
-      anchor.removeAttribute('aria-expanded');
+      anchor.setAttribute('aria-expanded', 'false');
       pop.remove();
-      if (refocus) anchor.focus();
-      resolve(result);
+      if (refocus && anchor.isConnected) anchor.focus({ preventScroll: !scroll });
+      // Picking the action for a button that's no longer on the page does nothing.
+      resolve(result && anchor.isConnected);
     }
     openConfirm = { anchor, pop, close };
+    place();
     anchor.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outside, true);
     addEventListener('resize', place);
@@ -602,8 +613,9 @@ export function forgetWho() {
   }
 }
 
-// The Keys link only shows for the admin.
-whoami().then(who => {
+/** The Keys link only shows for the admin. */
+export function syncNav(who) {
   const link = document.getElementById('nav-keys');
   if (link) link.hidden = !who?.admin;
-});
+}
+whoami().then(syncNav);

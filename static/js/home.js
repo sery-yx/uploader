@@ -16,6 +16,7 @@ import {
   permOfFile,
   setLabel,
   store,
+  syncNav,
   toast,
   whoami,
 } from './ui.js';
@@ -72,6 +73,7 @@ function keyError(message) {
 function forgetKey(message) {
   store.set(KEY_STORAGE, null);
   forgetWho();
+  syncNav(null);
   allowed = new Set(ALL_PERMS());
   setFile(null);
   textInput.value = '';
@@ -89,8 +91,13 @@ async function applyKey({ fresh = false } = {}) {
     forgetKey('That key isn’t valid. It may have been reset or deleted; ask for a new one.');
     return false;
   }
+  syncNav(who);
   allowed = new Set(who.perms);
   const all = allowed.size === ALL_PERMS().length;
+  // Say what this key may upload instead of everything the server takes.
+  $('home-sub').textContent = all
+    ? `Pictures, GIFs, video, audio, text or any other file, up to ${maxLabel}.`
+    : `${capitalise(describePerms([...allowed]))}, up to ${maxLabel}.`;
   $('key-scope').hidden = all;
   $('key-scope').textContent = all
     ? ''
@@ -133,7 +140,14 @@ keyForm.addEventListener('submit', async e => {
 });
 keyInput.addEventListener('input', () => keyError(null));
 
-$('forget-key').addEventListener('click', () => forgetKey());
+$('forget-key').addEventListener('click', async e => {
+  const ok = await confirmAction(e.currentTarget, {
+    title: 'Forget the key in this browser?',
+    detail: 'You’ll need to paste it again to upload. The key itself keeps working.',
+    action: 'Forget key',
+  });
+  if (ok) forgetKey();
+});
 
 // ---------- tabs ----------
 
@@ -182,6 +196,7 @@ function setFile(file) {
   if (file) {
     const p = permOfFile(file);
     $('picked-name').textContent = file.name || 'Pasted file';
+    $('picked-name').title = file.name || '';
     $('picked-info').textContent = `${perm(p)?.one ?? 'File'} · ${formatSize(file.size)}`;
     const top = file.type.split('/')[0];
     if (top === 'image' || top === 'video') {
@@ -197,6 +212,7 @@ function setFile(file) {
     } else {
       thumb.append(icon(KIND_ICON[p] ?? 'file'));
     }
+    // The reason also stays under the file (see syncSubmit); the toast is the alert.
     if (!allowed.has(p)) {
       toast(`This key can’t upload ${perm(p)?.noun ?? 'this file'}.`, {
         type: 'error',
@@ -204,11 +220,15 @@ function setFile(file) {
       });
     } else if (file.size > maxBytes) {
       toast('That file is too large.', { type: 'error', detail: sizeError(file.size) });
+    } else if (file.size === 0) {
+      toast('That file is empty.', { type: 'error', detail: 'There’s nothing in it to upload.' });
     }
   }
   fileInput.value = '';
   syncSubmit();
 }
+
+const capitalise = s => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** "It's 50,2 MB; the limit is 50 MB.", exact bytes when the rounded sizes would look equal. */
 function sizeError(size) {
@@ -303,11 +323,23 @@ function payload() {
   return new File([textInput.value], 'text.txt', { type: 'text/plain' });
 }
 
+/** Why this payload can't be uploaded, or null. */
+function blocked(p) {
+  if (!allowed.has(permOfFile(p)))
+    return `This key can’t upload ${perm(permOfFile(p))?.noun ?? 'this file'}. It can upload ${describePerms([...allowed])}.`;
+  if (p.size > maxBytes) return `Too large. ${sizeError(p.size)}`;
+  if (p.size === 0) return 'This file is empty.';
+  return null;
+}
+
 function syncSubmit() {
   const p = payload();
-  submit.disabled = busy || !p || p.size > maxBytes || !allowed.has(permOfFile(p));
+  const reason = p && blocked(p);
+  submit.disabled = busy || !p || Boolean(reason);
+  const hint = $('upload-hint');
+  hint.classList.toggle('bad', Boolean(reason) && !busy);
   // The file row already shows its size; text only shows it here.
-  $('upload-hint').textContent = p && !busy && mode === 'text' ? formatSize(p.size) : '';
+  hint.textContent = !p || busy ? '' : (reason ?? (mode === 'text' ? formatSize(p.size) : ''));
 }
 
 function setBusy(on) {
@@ -552,13 +584,14 @@ function renderRecent() {
         return;
       }
       const rows = [...recentList.children];
-      const at = rows.indexOf(row);
-      const nextId = (rows[at + 1] ?? rows[at - 1])?.dataset.id;
+      // By id: the list may have re-rendered while the request ran.
+      const at = rows.findIndex(x => x.dataset.id === id);
+      const nextId = at < 0 ? null : (rows[at + 1] ?? rows[at - 1])?.dataset.id;
       forgetRecent(r);
       toast('File deleted.', { type: 'success' });
       const next =
         nextId && recentList.querySelector(`[data-id="${CSS.escape(nextId)}"] .danger-target`);
-      (next || $('forget-key')).focus();
+      (next || $('recent-title')).focus();
     });
 
     tools.append(copyBtn, del);
@@ -607,7 +640,8 @@ $('clear-recent').addEventListener('click', async e => {
   store.set(STORAGE.recent, null);
   renderRecent();
   toast('List cleared.', { detail: 'The files themselves are still online.' });
-  $('forget-key').focus();
+  // The Clear list button is hidden now; the section heading is always there.
+  $('recent-title').focus();
 });
 
 // Keep the list in step with deletions made in another tab.
